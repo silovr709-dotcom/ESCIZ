@@ -30,7 +30,16 @@ type Props = {
 }
 
 export default function SketchObjectView({ object: o, selected, primary = selected, onPointerDown, onHandleDown }: Props) {
-  const common = { stroke: o.color, fill: o.color }
+  if (o.type === 'anchor') return <g className={`sketch-object non-export helper-object ${selected ? 'selected' : ''}`} transform={`translate(${o.x} ${o.y})`} onPointerDown={e => onPointerDown(e, o)}>
+    <circle r="9" fill="#fff" fillOpacity=".8" stroke={o.color} strokeWidth="2"/>
+    <path d="M -14 0 H 14 M 0 -14 V 14" stroke={o.color} strokeWidth="1.5"/>
+    <text x="12" y="-11" fontSize={o.fontSize} fontWeight="800" fill={o.color} stroke="white" strokeWidth="3" paintOrder="stroke">{o.label}</text>
+  </g>
+
+  if (o.type === 'guide') return <g className={`sketch-object non-export helper-object ${selected ? 'selected' : ''}`} onPointerDown={e => onPointerDown(e, o)}>
+    {o.orientation === 'horizontal' ? <line x1="-100000" y1={o.y} x2="100000" y2={o.y} stroke={o.color} strokeWidth="1.5" strokeDasharray="8 6"/> : <line x1={o.x} y1="-100000" x2={o.x} y2="100000" stroke={o.color} strokeWidth="1.5" strokeDasharray="8 6"/>}
+  </g>
+
   if (o.type === 'dimension') {
     const x1 = o.x, y1 = o.y, x2 = o.x2, y2 = o.y2
     const baseMidX = (x1 + x2) / 2, baseMidY = (y1 + y2) / 2

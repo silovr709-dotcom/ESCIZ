@@ -1,5 +1,5 @@
 export type Point = { x: number; y: number }
-export type Tool = 'select' | 'free-dimension' | 'h-dimension' | 'v-dimension' | 'chain' | 'module' | 'callout' | 'comment' | 'equipment' | 'link'
+export type Tool = 'select' | 'free-dimension' | 'h-dimension' | 'v-dimension' | 'chain' | 'anchor' | 'h-guide' | 'v-guide' | 'module' | 'callout' | 'comment' | 'equipment' | 'link'
 export type EquipmentType = 'Холодильник' | 'Духовой шкаф' | 'СВЧ' | 'ПММ' | 'Варочная панель' | 'Вытяжка' | 'Стиральная машина' | 'Мойка' | 'Другое'
 
 export type BaseObject = {
@@ -57,7 +57,17 @@ export type CalloutObject = BaseObject & {
   url?: string
 }
 
-export type SketchObject = DimensionObject | ModuleObject | TextObject | CalloutObject
+export type AnchorObject = BaseObject & {
+  type: 'anchor'
+  label: string
+}
+
+export type GuideObject = BaseObject & {
+  type: 'guide'
+  orientation: 'horizontal' | 'vertical'
+}
+
+export type SketchObject = DimensionObject | ModuleObject | TextObject | CalloutObject | AnchorObject | GuideObject
 
 export type SketchHeader = {
   enabled: boolean
@@ -74,6 +84,7 @@ export type SketchProject = {
   createdAt: string
   updatedAt: string
   image: { dataUrl: string; width: number; height: number; name: string }
+  imageDisplay?: { opacity: number; brightness: number; contrast: number; saturation: number; grayscale: boolean }
   objects: SketchObject[]
   header: SketchHeader
   integration: { projectId?: string; clientId?: string }

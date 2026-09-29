@@ -31,11 +31,17 @@ async function makeCanvas(project: SketchProject, svg: SVGSVGElement) {
   }
 
   const base = await loadImage(project.image.dataUrl)
+  const display = project.imageDisplay
+  if (display) {
+    ctx.globalAlpha = display.opacity
+    ctx.filter = `brightness(${display.brightness}) contrast(${display.contrast}) saturate(${display.saturation}) grayscale(${display.grayscale ? 1 : 0})`
+  }
   ctx.drawImage(base, 0, headerH, project.image.width, project.image.height)
+  ctx.globalAlpha = 1; ctx.filter = 'none'
 
   const clone = svg.cloneNode(true) as SVGSVGElement
   clone.querySelector('image')?.remove()
-  clone.querySelectorAll('.object-handle').forEach(n => n.remove())
+  clone.querySelectorAll('.object-handle, .non-export').forEach(n => n.remove())
   clone.setAttribute('width', String(project.image.width))
   clone.setAttribute('height', String(project.image.height))
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
