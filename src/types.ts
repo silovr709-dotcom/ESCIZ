@@ -11,6 +11,11 @@ export type BaseObject = {
   fontSize: number
   width?: number
   height?: number
+  fill?: string
+  fillOpacity?: number
+  borderRadius?: number
+  hidden?: boolean
+  locked?: boolean
 }
 
 export type DimensionObject = BaseObject & {
@@ -22,6 +27,7 @@ export type DimensionObject = BaseObject & {
   y2: number
   value: string
   lineWidth: number
+  arrowStyle?: 'open' | 'closed' | 'tick'
 }
 
 export type ModuleObject = BaseObject & {

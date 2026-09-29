@@ -56,12 +56,12 @@ export async function exportPng(project: SketchProject, svg: SVGSVGElement) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000)
 }
 
-export async function exportPdf(project: SketchProject, svg: SVGSVGElement) {
+export async function exportPdf(project: SketchProject, svg: SVGSVGElement, options: { format?: 'a4' | 'a3'; orientation?: 'portrait' | 'landscape'; margin?: number } = {}) {
   const { canvas, headerH } = await makeCanvas(project, svg)
-  const landscape = canvas.width > canvas.height
-  const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4', compress: true })
+  const orientation = options.orientation ?? (canvas.width > canvas.height ? 'landscape' : 'portrait')
+  const pdf = new jsPDF({ orientation, unit: 'mm', format: options.format ?? 'a4', compress: true })
   const pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight()
-  const margin = 8
+  const margin = options.margin ?? 8
   const scale = Math.min((pageW - margin * 2) / canvas.width, (pageH - margin * 2) / canvas.height)
   const w = canvas.width * scale, h = canvas.height * scale
   const ox = (pageW - w) / 2, oy = (pageH - h) / 2
