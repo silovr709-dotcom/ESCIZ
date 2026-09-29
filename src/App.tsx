@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import {
-  AlignHorizontalSpaceAround, AlignVerticalSpaceAround, ArrowLeft, ChevronDown, Copy, Download, ExternalLink,
-  FilePlus2, FolderOpen, GalleryVerticalEnd, Grip, Image as ImageIcon, Link2, Maximize2, MessageSquareText,
-  MonitorUp, MousePointer2, PackagePlus, Ruler, Redo2, Save, Settings2, Trash2, Undo2, Upload, ZoomIn, ZoomOut
+  AlignHorizontalSpaceAround, AlignVerticalSpaceAround, ArrowLeft, ChevronDown, Clock3, Copy, Download, ExternalLink,
+  FileDown, FilePlus2, FolderOpen, GalleryVerticalEnd, Grip, Image as ImageIcon, Link2, Maximize2, MessageSquareText,
+  MonitorUp, MousePointer2, PackagePlus, Plus, Ruler, Redo2, Save, Settings2, Trash2, Undo2, Upload, ZoomIn, ZoomOut
 } from 'lucide-react'
 import SketchObjectView from './SketchObjectView'
-import { deleteProject, listProjects, loadProject, saveProject } from './storage'
+import { deleteProject, deleteRevision, listProjects, listRevisions, loadProject, saveProject, saveRevision, type ProjectRevision } from './storage'
 import { exportPdf, exportPng } from './export'
+import { downloadProjectFile, readProjectFile } from './projectFile'
 import type { EquipmentType, ProjectSummary, SketchObject, SketchProject, Tool } from './types'
 import { todayRu, uid } from './types'
 
@@ -77,12 +78,20 @@ export default function App() {
     finally { setLoading(false) }
   }
 
-  if (!project) return <StartScreen projects={projects} loading={loading} error={error} onUpload={openFile} onOpen={async id => { const p = await loadProject(id); if (p) setProject(p) }} onDelete={async id => { await deleteProject(id); refresh() }} />
+  const importProject = async (file?: File) => {
+    if (!file) return
+    setLoading(true); setError('')
+    try { const imported = await readProjectFile(file); await saveProject(imported); setProject(imported) } catch (e) { setError(e instanceof Error ? e.message : 'Ошибка импорта проекта') }
+    finally { setLoading(false) }
+  }
+
+  if (!project) return <StartScreen projects={projects} loading={loading} error={error} onUpload={openFile} onImport={importProject} onOpen={async id => { const p = await loadProject(id); if (p) setProject(p) }} onDelete={async id => { await deleteProject(id); refresh() }} />
   return <Editor initialProject={project} onClose={() => { setProject(null); refresh() }} />
 }
 
-function StartScreen({ projects, loading, error, onUpload, onOpen, onDelete }: { projects: ProjectSummary[]; loading: boolean; error: string; onUpload: (f?: File) => void; onOpen: (id: string) => void; onDelete: (id: string) => void }) {
+function StartScreen({ projects, loading, error, onUpload, onImport, onOpen, onDelete }: { projects: ProjectSummary[]; loading: boolean; error: string; onUpload: (f?: File) => void; onImport: (f?: File) => void; onOpen: (id: string) => void; onDelete: (id: string) => void }) {
   const input = useRef<HTMLInputElement>(null)
+  const projectInput = useRef<HTMLInputElement>(null)
   const [drag, setDrag] = useState(false)
   return <main className="start-screen">
     <header className="brand"><div className="brand-mark">Р</div><div><strong>РЕцепт</strong><span>Эскиз PRO</span></div></header>
@@ -93,6 +102,7 @@ function StartScreen({ projects, loading, error, onUpload, onOpen, onDelete }: {
         <span className="upload-icon">{loading ? <span className="spinner"/> : <Upload/>}</span>
         <strong>{loading ? 'Загружаем…' : 'Загрузить скрин проекта'}</strong><span>или перетащите JPG, PNG, WEBP сюда</span>
       </button>
+      <div className="import-project-row"><input ref={projectInput} type="file" accept=".eskiz,application/json" hidden onChange={e => onImport(e.target.files?.[0])}/><button onClick={() => projectInput.current?.click()}><FolderOpen/>Открыть файл проекта <b>.eskiz</b></button><span>Перенос проекта или резервная копия</span></div>
       {error && <div className="error-toast">{error}</div>}
       {projects.length > 0 && <section className="recent"><div className="section-title"><h2>Недавние эскизы</h2><span>{projects.length}</span></div><div className="project-grid">
         {projects.map(p => <article className="project-card" key={p.id} onClick={() => onOpen(p.id)}>
@@ -115,6 +125,8 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const [saved, setSaved] = useState(true)
   const [exportOpen, setExportOpen] = useState(false)
   const [printSettings, setPrintSettings] = useState<{ format: 'a4' | 'a3'; orientation: 'portrait' | 'landscape'; margin: number }>({ format: 'a4', orientation: 'landscape', margin: 8 })
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [revisions, setRevisions] = useState<ProjectRevision[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chainLast, setChainLast] = useState<{ x: number; y: number } | null>(null)
   const [draftLine, setDraftLine] = useState<{ start: { x: number; y: number }; end: { x: number; y: number }; callout: boolean } | null>(null)
@@ -136,7 +148,11 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const changeObject = (id: string, patch: Partial<SketchObject>) => commit(p => ({ ...p, objects: p.objects.map(o => o.id === id ? { ...o, ...patch } as SketchObject : o) }))
   const undo = useCallback(() => setProject(current => { const prev = past.current.pop(); if (!prev) return current; future.current.push(current); setSaved(false); return prev }), [])
   const redo = useCallback(() => setProject(current => { const next = future.current.pop(); if (!next) return current; past.current.push(current); setSaved(false); return next }), [])
-  const save = useCallback(async () => { const next = { ...project, updatedAt: new Date().toISOString() }; setProject(next); await saveProject(next); setSaved(true) }, [project])
+  const save = useCallback(async () => {
+    const next = { ...project, updatedAt: new Date().toISOString() }; setProject(next); await saveProject(next); setSaved(true)
+    const existing = await listRevisions(next.id)
+    if (!existing[0] || Date.now() - new Date(existing[0].createdAt).getTime() > 15 * 60 * 1000) await saveRevision(next, 'Автоматическая резервная копия')
+  }, [project])
 
   useEffect(() => { if (saved) return; const timer = setTimeout(() => { save() }, 1600); return () => clearTimeout(timer) }, [saved, save])
 
@@ -363,6 +379,9 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
 
   const setActiveTool = (id: Tool) => { setTool(id); if (id !== 'chain') setChainLast(null) }
   const titleUpdate = (title: string) => { setProject(p => ({ ...p, title })); setSaved(false) }
+  const openHistory = async () => { setRevisions(await listRevisions(project.id)); setHistoryOpen(true) }
+  const createCheckpoint = async () => { const label = prompt('Название контрольной точки:', 'Рабочая версия'); if (!label) return; await saveRevision(project, label); setRevisions(await listRevisions(project.id)) }
+  const restoreRevision = (revision: ProjectRevision) => { if (!confirm(`Восстановить версию «${revision.label}»? Текущее состояние останется в истории отмены.`)) return; past.current.push(project); setProject(structuredClone(revision.project)); setSaved(false); setHistoryOpen(false); selectOnly(null) }
   const alignSelection = (mode: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => {
     const items = project.objects.filter(o => selectedIds.includes(o.id) && !o.locked)
     if (items.length < 2) return
@@ -388,7 +407,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   return <div className="editor-shell">
     <header className="app-header">
       <div className="header-left"><button className="icon-btn" title="К проектам" onClick={async () => { await save(); onClose() }}><ArrowLeft/></button><div className="mini-brand"><div className="brand-mark small">Р</div><span>Эскиз <b>PRO</b></span></div><div className="separator"/><input className="title-input" value={project.title} onChange={e => titleUpdate(e.target.value)}/><span className={`save-state ${saved ? 'ok' : ''}`}>{saved ? 'Сохранено' : 'Сохраняем…'}</span></div>
-      <div className="header-actions"><button className="icon-btn" title="Отменить (Ctrl+Z)" disabled={!past.current.length} onClick={undo}><Undo2/></button><button className="icon-btn" title="Повторить (Ctrl+Shift+Z)" disabled={!future.current.length} onClick={redo}><Redo2/></button><button className="secondary-btn" onClick={save}><Save/>Сохранить</button><div className="export-wrap"><button className="primary-btn" onClick={() => setExportOpen(!exportOpen)}><Download/>Экспорт<ChevronDown size={15}/></button>{exportOpen && <div className="export-menu export-menu-wide"><div className={`page-preview ${printSettings.orientation}`}><div style={{ backgroundImage: `url(${project.image.dataUrl})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}><b>{printSettings.format.toUpperCase()}</b><span>{printSettings.orientation === 'landscape' ? 'Альбомная' : 'Книжная'}</span></div></div><div className="export-settings"><label>Лист<select value={printSettings.format} onChange={e => setPrintSettings({ ...printSettings, format: e.target.value as 'a4' | 'a3' })}><option value="a4">A4</option><option value="a3">A3</option></select></label><label>Ориентация<select value={printSettings.orientation} onChange={e => setPrintSettings({ ...printSettings, orientation: e.target.value as 'portrait' | 'landscape' })}><option value="landscape">Альбомная</option><option value="portrait">Книжная</option></select></label><label>Поля, мм<input type="number" min="0" max="30" value={printSettings.margin} onChange={e => setPrintSettings({ ...printSettings, margin: +e.target.value })}/></label></div><div className="export-buttons"><button onClick={async () => { if (svgRef.current) await exportPng(project, svgRef.current); setExportOpen(false) }}><ImageIcon/>PNG</button><button className="dark" onClick={async () => { if (svgRef.current) await exportPdf(project, svgRef.current, printSettings); setExportOpen(false) }}><FilePlus2/>Экспорт PDF</button></div></div>}</div></div>
+      <div className="header-actions"><button className="icon-btn" title="Отменить (Ctrl+Z)" disabled={!past.current.length} onClick={undo}><Undo2/></button><button className="icon-btn" title="Повторить (Ctrl+Shift+Z)" disabled={!future.current.length} onClick={redo}><Redo2/></button><button className="icon-btn" title="Скачать редактируемый проект .eskiz" onClick={() => downloadProjectFile(project)}><FileDown/></button><button className="icon-btn" title="Локальная история версий" onClick={openHistory}><Clock3/></button><button className="secondary-btn" onClick={save}><Save/>Сохранить</button><div className="export-wrap"><button className="primary-btn" onClick={() => setExportOpen(!exportOpen)}><Download/>Экспорт<ChevronDown size={15}/></button>{exportOpen && <div className="export-menu export-menu-wide"><div className={`page-preview ${printSettings.orientation}`}><div style={{ backgroundImage: `url(${project.image.dataUrl})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}><b>{printSettings.format.toUpperCase()}</b><span>{printSettings.orientation === 'landscape' ? 'Альбомная' : 'Книжная'}</span></div></div><div className="export-settings"><label>Лист<select value={printSettings.format} onChange={e => setPrintSettings({ ...printSettings, format: e.target.value as 'a4' | 'a3' })}><option value="a4">A4</option><option value="a3">A3</option></select></label><label>Ориентация<select value={printSettings.orientation} onChange={e => setPrintSettings({ ...printSettings, orientation: e.target.value as 'portrait' | 'landscape' })}><option value="landscape">Альбомная</option><option value="portrait">Книжная</option></select></label><label>Поля, мм<input type="number" min="0" max="30" value={printSettings.margin} onChange={e => setPrintSettings({ ...printSettings, margin: +e.target.value })}/></label></div><div className="export-buttons"><button onClick={async () => { if (svgRef.current) await exportPng(project, svgRef.current); setExportOpen(false) }}><ImageIcon/>PNG</button><button className="dark" onClick={async () => { if (svgRef.current) await exportPdf(project, svgRef.current, printSettings); setExportOpen(false) }}><FilePlus2/>Экспорт PDF</button></div></div>}</div></div>
     </header>
     <nav className="tool-strip">{toolItems.map(({ id, label, icon: Icon, key }) => <button key={id} className={tool === id ? 'active' : ''} title={`${label}${key ? ` (${key})` : ''}`} onClick={() => setActiveTool(id)}><Icon/><span>{label.replace('Горизонтальный ', '').replace('Вертикальный ', '')}</span>{key && <kbd>{key}</kbd>}</button>)}<div className="toolbar-spacer"/><button className={sidebarOpen ? 'active subtle' : 'subtle'} onClick={() => setSidebarOpen(!sidebarOpen)}><Settings2/><span>Свойства</span></button></nav>
     <div className="work-area">
@@ -415,6 +434,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       </div>}
       {sidebarOpen && <Inspector project={project} object={chosen} selectedIds={selectedIds} onSelect={selectOnly} onAlign={alignSelection} showImage={showImage} showAnnotations={showAnnotations} onShowImage={setShowImage} onShowAnnotations={setShowAnnotations} onProject={patch => commit(p => ({ ...p, ...patch }))} onObject={(patch) => chosen && changeObject(chosen.id, patch)} onPatchObject={changeObject} onDelete={deleteSelected} onDuplicate={duplicate}/>}
     </div>
+    {historyOpen && <div className="modal-backdrop" onPointerDown={e => { if (e.target === e.currentTarget) setHistoryOpen(false) }}><section className="history-modal"><div className="modal-title"><div><Clock3/><span><b>История проекта</b><small>Хранится только в этом браузере · максимум 12 версий</small></span></div><button onClick={() => setHistoryOpen(false)}>×</button></div><button className="checkpoint-btn" onClick={createCheckpoint}><Plus/>Создать контрольную точку</button><div className="revision-list">{revisions.length ? revisions.map(revision => <article key={revision.id}><div><b>{revision.label}</b><span>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(revision.createdAt))}</span><small>{revision.project.objects.length} объектов</small></div><button onClick={() => restoreRevision(revision)}>Восстановить</button><button className="revision-delete" title="Удалить версию" onClick={async () => { await deleteRevision(revision.id); setRevisions(await listRevisions(project.id)) }}>×</button></article>) : <div className="no-revisions">Контрольных точек пока нет</div>}</div></section></div>}
     <footer className="status-bar"><span><span className="status-dot"/> {project.image.name} · {project.image.width} × {project.image.height}px</span><span className="status-tip">Стрелки — точный сдвиг · Shift — привязка угла · Пробел — перемещение</span><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.1, z - .1))}><ZoomOut/></button><button className="zoom-value" onClick={fit}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(3, z + .1))}><ZoomIn/></button><button title="По размеру экрана" onClick={fit}><Maximize2/></button></div></footer>
   </div>
 }
