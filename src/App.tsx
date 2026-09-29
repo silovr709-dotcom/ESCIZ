@@ -155,6 +155,18 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   }, [project])
 
   useEffect(() => { if (saved) return; const timer = setTimeout(() => { save() }, 1600); return () => clearTimeout(timer) }, [saved, save])
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return
+      event.preventDefault()
+      event.stopPropagation()
+      setZoom(current => Math.max(.1, Math.min(3, current * (event.deltaY > 0 ? .9 : 1.1))))
+    }
+    viewport.addEventListener('wheel', handleWheel, { passive: false })
+    return () => viewport.removeEventListener('wheel', handleWheel)
+  }, [])
 
   const deleteSelected = useCallback(() => { if (!selectedIds.length) return; commit(p => ({ ...p, objects: p.objects.filter(o => !selectedIds.includes(o.id)) })); setSelected(null); setSelectedIds([]) }, [selectedIds, commit])
   const duplicate = useCallback(() => {
@@ -411,7 +423,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     </header>
     <nav className="tool-strip">{toolItems.map(({ id, label, icon: Icon, key }) => <button key={id} className={tool === id ? 'active' : ''} title={`${label}${key ? ` (${key})` : ''}`} onClick={() => setActiveTool(id)}><Icon/><span>{label.replace('Горизонтальный ', '').replace('Вертикальный ', '')}</span>{key && <kbd>{key}</kbd>}</button>)}<div className="toolbar-spacer"/><button className={sidebarOpen ? 'active subtle' : 'subtle'} onClick={() => setSidebarOpen(!sidebarOpen)}><Settings2/><span>Свойства</span></button></nav>
     <div className="work-area">
-      <section ref={viewportRef} className={`canvas-viewport ${spaceDown ? 'panning' : ''}`} onWheel={e => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(z => Math.max(.1, Math.min(3, z * (e.deltaY > 0 ? .9 : 1.1)))) } }} onPointerDown={e => { if (!spaceDown && e.button !== 1) return; const v = viewportRef.current!; panRef.current = { x: e.clientX, y: e.clientY, left: v.scrollLeft, top: v.scrollTop }; v.setPointerCapture(e.pointerId) }} onPointerMove={e => { const pan = panRef.current; if (!pan) return; const v = viewportRef.current!; v.scrollLeft = pan.left - (e.clientX - pan.x); v.scrollTop = pan.top - (e.clientY - pan.y) }} onPointerUp={() => { panRef.current = null }}>
+      <section ref={viewportRef} className={`canvas-viewport ${spaceDown ? 'panning' : ''}`} onPointerDown={e => { if (!spaceDown && e.button !== 1) return; const v = viewportRef.current!; panRef.current = { x: e.clientX, y: e.clientY, left: v.scrollLeft, top: v.scrollTop }; v.setPointerCapture(e.pointerId) }} onPointerMove={e => { const pan = panRef.current; if (!pan) return; const v = viewportRef.current!; v.scrollLeft = pan.left - (e.clientX - pan.x); v.scrollTop = pan.top - (e.clientY - pan.y) }} onPointerUp={() => { panRef.current = null }}>
         {project.header.enabled && <div className="canvas-header-preview" style={{ width: project.image.width * zoom }}><strong>РЕцепт <i>/</i> Эскиз PRO</strong><span>Проект: {project.header.project || '—'}</span><small>Помещение: {project.header.room || '—'} · Дата: {project.header.date} · Вариант: {project.header.variant}</small></div>}
         <div className="stage" style={{ width: project.image.width * zoom, height: project.image.height * zoom }}>
           <svg ref={svgRef} viewBox={`0 0 ${project.image.width} ${project.image.height}`} width="100%" height="100%" className={`drawing-surface tool-${tool}`} onPointerDown={onStageDown} onPointerMove={onStageMove} onPointerUp={onStageUp}>
