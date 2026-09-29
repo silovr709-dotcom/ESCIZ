@@ -25,7 +25,7 @@ const toolItems: { id: Tool; label: string; icon: typeof MousePointer2; key?: st
   { id: 'link', label: 'Ссылка', icon: Link2, key: 'K' },
 ]
 
-type Drag = { mode: 'create' | 'move' | 'handle'; start: { x: number; y: number }; id?: string; end?: 'start' | 'end' | 'offset'; before: SketchProject; original?: SketchObject }
+type Drag = { mode: 'create' | 'move' | 'handle'; start: { x: number; y: number }; id?: string; end?: 'start' | 'end' | 'offset' | 'resize'; before: SketchProject; original?: SketchObject }
 type QuickEdit = { id: string; value: string; left: number; top: number; repeatTool: Tool }
 
 function readImage(file: File): Promise<{ dataUrl: string; width: number; height: number; name: string }> {
@@ -48,6 +48,11 @@ function snapAngle(start: { x: number; y: number }, end: { x: number; y: number 
   const angle = Math.atan2(end.y - start.y, end.x - start.x)
   const snapped = Math.round(angle / (step * Math.PI / 180)) * step * Math.PI / 180
   return { x: start.x + Math.cos(snapped) * distance, y: start.y + Math.sin(snapped) * distance }
+}
+
+function nextModuleNumber(objects: SketchObject[]) {
+  const maxNumber = objects.filter(o => o.type === 'module').reduce((max, o) => o.type === 'module' ? Math.max(max, Number(o.number.match(/\d+/)?.[0] ?? 0)) : max, 0)
+  return `М${String(maxNumber + 1).padStart(2, '0')}`
 }
 
 function createProject(image: SketchProject['image']): SketchProject {
@@ -131,7 +136,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   useEffect(() => { if (saved) return; const timer = setTimeout(() => { save() }, 1600); return () => clearTimeout(timer) }, [saved, save])
 
   const deleteSelected = useCallback(() => { if (!selected) return; commit(p => ({ ...p, objects: p.objects.filter(o => o.id !== selected) })); setSelected(null) }, [selected, commit])
-  const duplicate = useCallback(() => { if (!chosen) return; const copy = { ...chosen, id: uid(), x: chosen.x + 24, y: chosen.y + 24 } as SketchObject; if (copy.type === 'dimension') { copy.x2 += 24; copy.y2 += 24 } if (copy.type === 'callout') { copy.targetX += 24; copy.targetY += 24 } commit(p => ({ ...p, objects: [...p.objects, copy] })); setSelected(copy.id) }, [chosen, commit])
+  const duplicate = useCallback(() => { if (!chosen) return; const copy = { ...chosen, id: uid(), x: chosen.x + 24, y: chosen.y + 24 } as SketchObject; if (copy.type === 'dimension') { copy.x2 += 24; copy.y2 += 24 } if (copy.type === 'callout') { copy.targetX += 24; copy.targetY += 24 } if (copy.type === 'module') copy.number = nextModuleNumber(project.objects); commit(p => ({ ...p, objects: [...p.objects, copy] })); setSelected(copy.id) }, [chosen, commit, project.objects])
   const nudgeSelected = useCallback((dx: number, dy: number) => {
     if (!selected) return
     commit(p => ({ ...p, objects: p.objects.map(o => {
@@ -187,7 +192,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     }
     return dx < threshold || dy < threshold ? { x: snapX, y: snapY } : null
   }
-  const moduleNumber = () => `М${String(project.objects.filter(o => o.type === 'module').length + 1).padStart(2, '0')}`
+  const moduleNumber = () => nextModuleNumber(project.objects)
   const addAt = (type: Tool, p: { x: number; y: number }) => {
     const base = { id: uid(), x: p.x, y: p.y, color: COLORS.ink, fontSize: 22 }
     let object: SketchObject
@@ -237,11 +242,11 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       setDraftLine({ start: d.start, end: p, callout: tool === 'callout' })
       return
     }
-    if (d.mode === 'handle' && d.end !== 'offset') {
+    if (d.mode === 'handle' && d.end !== 'offset' && d.end !== 'resize') {
       const snapped = !e.altKey ? nearestSnap(p, d.id) : null
       if (snapped) { p = snapped; setSnapIndicator(snapped) } else setSnapIndicator(null)
     }
-    if (d.mode === 'handle' && d.end !== 'offset' && d.original?.type === 'dimension' && d.original.orientation === 'free' && e.shiftKey) {
+    if (d.mode === 'handle' && d.end !== 'offset' && d.end !== 'resize' && d.original?.type === 'dimension' && d.original.orientation === 'free' && e.shiftKey) {
       const anchor = d.end === 'start' ? { x: d.original.x2, y: d.original.y2 } : { x: d.original.x, y: d.original.y }
       p = snapAngle(anchor, p)
     }
@@ -250,6 +255,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       if (o.id !== d.id || !d.original) return o
       const orig = d.original
       if (d.mode === 'handle') {
+        if (d.end === 'resize' && orig.type !== 'dimension') return { ...orig, width: Math.max(60, p.x - orig.x), height: Math.max(36, p.y - orig.y) }
         if (orig.type === 'dimension') {
           if (d.end === 'offset') {
             const length = Math.max(1, Math.hypot(orig.x2 - orig.x, orig.y2 - orig.y))
@@ -302,7 +308,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     if (tool !== 'select') return
     const p = point(e); dragRef.current = { mode: 'move', start: p, id: o.id, before: project, original: o }; svgRef.current?.setPointerCapture(e.pointerId)
   }
-  const handleDown = (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end' | 'offset') => {
+  const handleDown = (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end' | 'offset' | 'resize') => {
     e.stopPropagation(); if (!chosen) return
     dragRef.current = { mode: 'handle', start: point(e), id: chosen.id, before: project, original: chosen, end }; svgRef.current?.setPointerCapture(e.pointerId)
   }
@@ -331,7 +337,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
         {project.header.enabled && <div className="canvas-header-preview" style={{ width: project.image.width * zoom }}><strong>РЕцепт <i>/</i> Эскиз PRO</strong><span>Проект: {project.header.project || '—'}</span><small>Помещение: {project.header.room || '—'} · Дата: {project.header.date} · Вариант: {project.header.variant}</small></div>}
         <div className="stage" style={{ width: project.image.width * zoom, height: project.image.height * zoom }}>
           <svg ref={svgRef} viewBox={`0 0 ${project.image.width} ${project.image.height}`} width="100%" height="100%" className={`drawing-surface tool-${tool}`} onPointerDown={onStageDown} onPointerMove={onStageMove} onPointerUp={onStageUp}>
-            <defs><marker id="dimArrow" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 8 1 L 1 4.5 L 8 8" fill="none" stroke={COLORS.ink} strokeWidth="1.5"/></marker></defs>
+            <defs><marker id="dimArrow" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 8 1 L 1 4.5 L 8 8" fill="none" stroke="context-stroke" strokeWidth="1.5"/></marker></defs>
             {showImage && <image href={project.image.dataUrl} x="0" y="0" width={project.image.width} height={project.image.height} preserveAspectRatio="none" pointerEvents="none"/>}
             {showAnnotations && project.objects.map(o => <SketchObjectView key={o.id} object={o} selected={o.id === selected} onPointerDown={objectDown} onHandleDown={handleDown}/>)}
             {draftLine && <g pointerEvents="none" opacity=".9">
@@ -372,9 +378,10 @@ function ObjectFields({ object: o, onObject }: { object: SketchObject; onObject:
     {o.type === 'equipment' && <><label>Тип техники<select value={o.equipmentType} onChange={e => onObject({ equipmentType: e.target.value, text: e.target.value } as Partial<SketchObject>)}>{equipmentTypes.map(t => <option key={t}>{t}</option>)}</select></label><label>Подпись<input autoFocus value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label><label>Ссылка на модель<input type="url" placeholder="https://…" value={o.url || ''} onChange={e => onObject({ url: e.target.value } as Partial<SketchObject>)}/></label></>}
     {o.type === 'link' && <><label>Название<input autoFocus value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label><label>URL<input type="url" placeholder="https://…" value={o.url || ''} onChange={e => onObject({ url: e.target.value } as Partial<SketchObject>)}/></label>{o.url && <a className="test-link" href={o.url} target="_blank" rel="noreferrer"><ExternalLink/>Открыть ссылку</a>}</>}
     <div className="section-label">Положение</div><div className="field-row"><label>X<input type="number" value={Math.round(o.x)} onChange={e => onObject({ x: +e.target.value } as Partial<SketchObject>)}/></label><label>Y<input type="number" value={Math.round(o.y)} onChange={e => onObject({ y: +e.target.value } as Partial<SketchObject>)}/></label></div>
+    {o.type !== 'dimension' && <><div className="section-label section-label-action"><span>Размер рамки</span><button onClick={() => onObject({ width: undefined, height: undefined } as Partial<SketchObject>)}>По тексту</button></div><div className="field-row"><label>Ширина<input type="number" min="60" placeholder="Авто" value={o.width ? Math.round(o.width) : ''} onChange={e => onObject({ width: e.target.value ? +e.target.value : undefined } as Partial<SketchObject>)}/></label><label>Высота<input type="number" min="36" placeholder="Авто" value={o.height ? Math.round(o.height) : ''} onChange={e => onObject({ height: e.target.value ? +e.target.value : undefined } as Partial<SketchObject>)}/></label></div></>}
     {o.type === 'dimension' && <div className="field-row"><label>Конец X<input type="number" value={Math.round(o.x2)} onChange={e => onObject({ x2: +e.target.value } as Partial<SketchObject>)}/></label><label>Конец Y<input type="number" value={Math.round(o.y2)} onChange={e => onObject({ y2: +e.target.value } as Partial<SketchObject>)}/></label></div>}
     <div className="field-row"><label>Цвет<input className="color-input" type="color" value={o.color} onChange={e => onObject({ color: e.target.value } as Partial<SketchObject>)}/></label><label>Размер текста<input type="number" min="12" max="64" value={o.fontSize} onChange={e => onObject({ fontSize: +e.target.value } as Partial<SketchObject>)}/></label></div>
-    <div className="helper-card"><b>Быстрое редактирование</b><span>Крайние маркеры меняют точки измерения, центральный — отступ размерной линии. Alt временно отключает привязку.</span></div>
+    <div className="helper-card"><b>Быстрое редактирование</b><span>{o.type === 'dimension' ? 'Крайние маркеры меняют точки измерения, центральный — отступ размерной линии. Alt временно отключает привязку.' : 'Перетаскивайте объект за рамку. Синий маркер в правом нижнем углу изменяет ширину и высоту.'}</span></div>
   </div>
 }
 

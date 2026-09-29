@@ -9,6 +9,8 @@ export type BaseObject = {
   y: number
   color: string
   fontSize: number
+  width?: number
+  height?: number
 }
 
 export type DimensionObject = BaseObject & {

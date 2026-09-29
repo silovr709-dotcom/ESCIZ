@@ -2,11 +2,30 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { SketchObject } from './types'
 
+function wrapLines(text: string, maxChars: number) {
+  return text.split('\n').flatMap(source => {
+    if (!source) return ['']
+    const words = source.split(/\s+/)
+    const lines: string[] = []
+    let line = ''
+    for (const word of words) {
+      if (word.length > maxChars) {
+        if (line) { lines.push(line); line = '' }
+        for (let i = 0; i < word.length; i += maxChars) lines.push(word.slice(i, i + maxChars))
+      } else if (!line) line = word
+      else if (`${line} ${word}`.length <= maxChars) line += ` ${word}`
+      else { lines.push(line); line = word }
+    }
+    if (line) lines.push(line)
+    return lines.length ? lines : ['']
+  })
+}
+
 type Props = {
   object: SketchObject
   selected: boolean
   onPointerDown: (e: ReactPointerEvent<SVGGElement>, object: SketchObject) => void
-  onHandleDown: (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end' | 'offset') => void
+  onHandleDown: (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end' | 'offset' | 'resize') => void
 }
 
 export default function SketchObjectView({ object: o, selected, onPointerDown, onHandleDown }: Props) {
@@ -53,37 +72,54 @@ export default function SketchObjectView({ object: o, selected, onPointerDown, o
   }
 
   if (o.type === 'module') {
-    const lines = [o.number, ...o.description.split('\n').filter(Boolean)]
-    const width = Math.max(72, ...lines.map(t => t.length * o.fontSize * .6)) + 22
-    const height = lines.length * (o.fontSize + 5) + 14
+    const sourceLines = [o.number, ...o.description.split('\n').filter(Boolean)]
+    const autoWidth = Math.max(72, ...sourceLines.map(t => t.length * o.fontSize * .6)) + 22
+    const width = o.width ? Math.max(60, o.width) : autoWidth
+    const maxChars = Math.max(2, Math.floor((width - 22) / (o.fontSize * .6)))
+    const lines = sourceLines.flatMap(line => wrapLines(line, maxChars))
+    const autoHeight = lines.length * (o.fontSize + 5) + 14
+    const height = Math.max(autoHeight, o.height ?? 0)
+    const textBlockHeight = lines.length * (o.fontSize + 5) - 5
+    const textY = Math.max(8, (height - textBlockHeight) / 2)
     return <g className={`sketch-object label-object ${selected ? 'selected' : ''}`} transform={`translate(${o.x} ${o.y})`} onPointerDown={e => onPointerDown(e, o)}>
       <rect x="0" y="0" width={width} height={height} rx="6" fill="white" stroke={o.color} strokeWidth="2"/>
-      {lines.map((line, i) => <text key={i} x={width / 2} y={12 + i * (o.fontSize + 5)} dominantBaseline="hanging" textAnchor="middle" fontSize={o.fontSize} fontWeight={i === 0 ? 800 : 500} fill={o.color}>{line}</text>)}
+      {lines.map((line, i) => <text key={i} x={width / 2} y={textY + i * (o.fontSize + 5)} dominantBaseline="hanging" textAnchor="middle" fontSize={o.fontSize} fontWeight={i === 0 ? 800 : 500} fill={o.color}>{line}</text>)}
+      {selected && <circle className="object-handle resize-handle" cx={width} cy={height} r="8" onPointerDown={e => onHandleDown(e, 'resize')}/>}
     </g>
   }
 
   if (o.type === 'callout') {
-    const lines = o.text.split('\n')
-    const width = Math.max(120, ...lines.map(t => t.length * o.fontSize * .56)) + 24
-    const height = Math.max(48, lines.length * (o.fontSize + 5) + 18)
+    const sourceLines = o.text.split('\n')
+    const autoWidth = Math.max(120, ...sourceLines.map(t => t.length * o.fontSize * .56)) + 24
+    const width = o.width ? Math.max(70, o.width) : autoWidth
+    const maxChars = Math.max(3, Math.floor((width - 24) / (o.fontSize * .56)))
+    const lines = wrapLines(o.text, maxChars)
+    const autoHeight = Math.max(48, lines.length * (o.fontSize + 5) + 18)
+    const height = Math.max(autoHeight, o.height ?? 0)
     const elbowX = o.x > o.targetX ? o.x - 18 : o.x + width + 18
     return <g className={`sketch-object label-object ${selected ? 'selected' : ''}`} onPointerDown={e => onPointerDown(e, o)}>
       <polyline points={`${o.targetX},${o.targetY} ${elbowX},${o.y + height / 2} ${o.x > o.targetX ? o.x : o.x + width},${o.y + height / 2}`} fill="none" stroke={o.color} strokeWidth="2"/>
       <circle cx={o.targetX} cy={o.targetY} r="5" fill={o.color}/>
       <rect x={o.x} y={o.y} width={width} height={height} rx="6" fill="#fff" stroke={o.color} strokeWidth="2"/>
       {lines.map((line, i) => <text key={i} x={o.x + 12} y={o.y + 11 + i * (o.fontSize + 5)} dominantBaseline="hanging" fontSize={o.fontSize} fontWeight="600" fill={o.color}>{line}</text>)}
-      {selected && <circle className="object-handle" cx={o.targetX} cy={o.targetY} r="7" onPointerDown={e => onHandleDown(e, 'start')}/>} 
+      {selected && <><circle className="object-handle" cx={o.targetX} cy={o.targetY} r="7" onPointerDown={e => onHandleDown(e, 'start')}/><circle className="object-handle resize-handle" cx={o.x + width} cy={o.y + height} r="8" onPointerDown={e => onHandleDown(e, 'resize')}/></>}
     </g>
   }
 
   const isComment = o.type === 'comment'
   const isLink = o.type === 'link'
-  const lines = o.text.split('\n')
-  const width = Math.max(isComment ? 160 : 100, ...lines.map(t => t.length * o.fontSize * .56)) + 28
-  const height = lines.length * (o.fontSize + 5) + 22
+  const sourceLines = o.text.split('\n')
+  const autoWidth = Math.max(isComment ? 160 : 100, ...sourceLines.map(t => t.length * o.fontSize * .56)) + 28
+  const width = o.width ? Math.max(60, o.width) : autoWidth
+  const textInset = isLink ? 37 : 28
+  const maxChars = Math.max(3, Math.floor((width - textInset) / (o.fontSize * .56)))
+  const lines = wrapLines(o.text, maxChars)
+  const autoHeight = lines.length * (o.fontSize + 5) + 22
+  const height = Math.max(autoHeight, o.height ?? 0)
   return <g className={`sketch-object label-object ${selected ? 'selected' : ''}`} transform={`translate(${o.x} ${o.y})`} onPointerDown={e => onPointerDown(e, o)}>
     <rect x="0" y="0" width={width} height={height} rx="7" fill={isComment ? '#fff8d8' : 'white'} stroke={o.color} strokeWidth={selected ? 3 : 1.5}/>
     {isLink && <foreignObject x="9" y={(height - 16) / 2} width="16" height="16"><ExternalLink size={16} color={o.color}/></foreignObject>}
     {lines.map((line, i) => <text key={i} x={isLink ? 31 : 14} y={12 + i * (o.fontSize + 5)} dominantBaseline="hanging" fontSize={o.fontSize} fontWeight={o.type === 'equipment' ? 750 : 550} fill={o.color}>{line}</text>)}
+    {selected && <circle className="object-handle resize-handle" cx={width} cy={height} r="8" onPointerDown={e => onHandleDown(e, 'resize')}/>}
   </g>
 }
