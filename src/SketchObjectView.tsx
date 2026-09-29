@@ -12,22 +12,24 @@ type Props = {
 export default function SketchObjectView({ object: o, selected, onPointerDown, onHandleDown }: Props) {
   const common = { stroke: o.color, fill: o.color }
   if (o.type === 'dimension') {
-    const horizontal = o.orientation === 'horizontal'
     const x1 = o.x, y1 = o.y, x2 = o.x2, y2 = o.y2
     const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2
+    const lineAngle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI
+    let readableAngle = lineAngle
+    if (readableAngle > 90) readableAngle -= 180
+    if (readableAngle < -90) readableAngle += 180
+    const textAngle = (o.textOrientation ?? 'parallel') === 'horizontal' ? 0 : readableAngle
     const label = `${o.value || '—'} мм`
     const approxWidth = Math.max(68, label.length * o.fontSize * .62)
     const tick = 9
+    const length = Math.max(1, Math.hypot(x2 - x1, y2 - y1))
+    const normalX = -(y2 - y1) / length * tick
+    const normalY = (x2 - x1) / length * tick
     return <g className={`sketch-object ${selected ? 'selected' : ''}`} onPointerDown={e => onPointerDown(e, o)}>
       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={o.color} strokeWidth={o.lineWidth} markerStart="url(#dimArrow)" markerEnd="url(#dimArrow)" />
-      {horizontal ? <>
-        <line x1={x1} y1={y1 - tick} x2={x1} y2={y1 + tick} stroke={o.color} strokeWidth={o.lineWidth}/>
-        <line x1={x2} y1={y2 - tick} x2={x2} y2={y2 + tick} stroke={o.color} strokeWidth={o.lineWidth}/>
-      </> : <>
-        <line x1={x1 - tick} y1={y1} x2={x1 + tick} y2={y1} stroke={o.color} strokeWidth={o.lineWidth}/>
-        <line x1={x2 - tick} y1={y2} x2={x2 + tick} y2={y2} stroke={o.color} strokeWidth={o.lineWidth}/>
-      </>}
-      <g transform={horizontal ? `translate(${midX} ${midY})` : `translate(${midX} ${midY}) rotate(-90)`}>
+      <line x1={x1 - normalX} y1={y1 - normalY} x2={x1 + normalX} y2={y1 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
+      <line x1={x2 - normalX} y1={y2 - normalY} x2={x2 + normalX} y2={y2 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
+      <g transform={`translate(${midX} ${midY}) rotate(${textAngle})`}>
         <rect x={-approxWidth / 2} y={-o.fontSize * .72} width={approxWidth} height={o.fontSize * 1.25} rx="3" fill="white" opacity=".92"/>
         <text textAnchor="middle" dominantBaseline="middle" fontSize={o.fontSize} fontWeight="700" fill={o.color}>{label}</text>
       </g>

@@ -1,5 +1,5 @@
 export type Point = { x: number; y: number }
-export type Tool = 'select' | 'h-dimension' | 'v-dimension' | 'chain' | 'module' | 'callout' | 'comment' | 'equipment' | 'link'
+export type Tool = 'select' | 'free-dimension' | 'h-dimension' | 'v-dimension' | 'chain' | 'module' | 'callout' | 'comment' | 'equipment' | 'link'
 export type EquipmentType = 'Холодильник' | 'Духовой шкаф' | 'СВЧ' | 'ПММ' | 'Варочная панель' | 'Вытяжка' | 'Стиральная машина' | 'Мойка' | 'Другое'
 
 export type BaseObject = {
@@ -13,7 +13,8 @@ export type BaseObject = {
 
 export type DimensionObject = BaseObject & {
   type: 'dimension'
-  orientation: 'horizontal' | 'vertical'
+  orientation: 'horizontal' | 'vertical' | 'free'
+  textOrientation?: 'parallel' | 'horizontal'
   x2: number
   y2: number
   value: string

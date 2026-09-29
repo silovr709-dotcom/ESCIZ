@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import {
   AlignHorizontalSpaceAround, AlignVerticalSpaceAround, ArrowLeft, ChevronDown, Copy, Download, ExternalLink,
   FilePlus2, FolderOpen, GalleryVerticalEnd, Grip, Image as ImageIcon, Link2, Maximize2, MessageSquareText,
-  MonitorUp, MousePointer2, PackagePlus, Plus, Redo2, Save, Settings2, Trash2, Undo2, Upload, X, ZoomIn, ZoomOut
+  MonitorUp, MousePointer2, PackagePlus, Ruler, Redo2, Save, Settings2, Trash2, Undo2, Upload, ZoomIn, ZoomOut
 } from 'lucide-react'
 import SketchObjectView from './SketchObjectView'
 import { deleteProject, listProjects, loadProject, saveProject } from './storage'
@@ -14,6 +14,7 @@ const COLORS = { ink: '#20242b', accent: '#ff5c35', blue: '#2563eb' }
 const equipmentTypes: EquipmentType[] = ['Холодильник', 'Духовой шкаф', 'СВЧ', 'ПММ', 'Варочная панель', 'Вытяжка', 'Стиральная машина', 'Мойка', 'Другое']
 const toolItems: { id: Tool; label: string; icon: typeof MousePointer2; key?: string }[] = [
   { id: 'select', label: 'Курсор', icon: MousePointer2, key: 'V' },
+  { id: 'free-dimension', label: 'Свободный размер', icon: Ruler, key: 'R' },
   { id: 'h-dimension', label: 'Горизонтальный размер', icon: AlignHorizontalSpaceAround, key: 'H' },
   { id: 'v-dimension', label: 'Вертикальный размер', icon: AlignVerticalSpaceAround, key: 'J' },
   { id: 'chain', label: 'Цепочка размеров', icon: GalleryVerticalEnd, key: 'C' },
@@ -39,6 +40,13 @@ function readImage(file: File): Promise<{ dataUrl: string; width: number; height
     }
     reader.readAsDataURL(file)
   })
+}
+
+function snapAngle(start: { x: number; y: number }, end: { x: number; y: number }, step = 45) {
+  const distance = Math.hypot(end.x - start.x, end.y - start.y)
+  const angle = Math.atan2(end.y - start.y, end.x - start.x)
+  const snapped = Math.round(angle / (step * Math.PI / 180)) * step * Math.PI / 180
+  return { x: start.x + Math.cos(snapped) * distance, y: start.y + Math.sin(snapped) * distance }
 }
 
 function createProject(image: SketchProject['image']): SketchProject {
@@ -100,6 +108,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const [exportOpen, setExportOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chainLast, setChainLast] = useState<{ x: number; y: number } | null>(null)
+  const [draftLine, setDraftLine] = useState<{ start: { x: number; y: number }; end: { x: number; y: number }; callout: boolean } | null>(null)
   const [spaceDown, setSpaceDown] = useState(false)
   const svgRef = useRef<SVGSVGElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -120,6 +129,16 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
 
   const deleteSelected = useCallback(() => { if (!selected) return; commit(p => ({ ...p, objects: p.objects.filter(o => o.id !== selected) })); setSelected(null) }, [selected, commit])
   const duplicate = useCallback(() => { if (!chosen) return; const copy = { ...chosen, id: uid(), x: chosen.x + 24, y: chosen.y + 24 } as SketchObject; if (copy.type === 'dimension') { copy.x2 += 24; copy.y2 += 24 } if (copy.type === 'callout') { copy.targetX += 24; copy.targetY += 24 } commit(p => ({ ...p, objects: [...p.objects, copy] })); setSelected(copy.id) }, [chosen, commit])
+  const nudgeSelected = useCallback((dx: number, dy: number) => {
+    if (!selected) return
+    commit(p => ({ ...p, objects: p.objects.map(o => {
+      if (o.id !== selected) return o
+      const moved = { ...o, x: o.x + dx, y: o.y + dy } as SketchObject
+      if (moved.type === 'dimension') { moved.x2 += dx; moved.y2 += dy }
+      if (moved.type === 'callout') { moved.targetX += dx; moved.targetY += dy }
+      return moved
+    }) }))
+  }, [selected, commit])
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -130,6 +149,11 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicate(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return }
       if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && selected) {
+        e.preventDefault()
+        const step = e.shiftKey ? 10 : 1
+        nudgeSelected(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0)
+      }
       if (e.key === 'Escape') { setTool('select'); setSelected(null); setChainLast(null) }
       const found = toolItems.find(t => t.key?.toLowerCase() === e.key.toLowerCase())
       if (found && !e.ctrlKey && !e.metaKey) { setTool(found.id); if (found.id !== 'chain') setChainLast(null) }
@@ -137,7 +161,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     const up = (e: KeyboardEvent) => { if (e.code === 'Space') setSpaceDown(false) }
     window.addEventListener('keydown', down); window.addEventListener('keyup', up)
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
-  }, [deleteSelected, duplicate, redo, save, undo])
+  }, [deleteSelected, duplicate, nudgeSelected, redo, save, selected, undo])
 
   const point = (e: ReactPointerEvent) => { const r = svgRef.current!.getBoundingClientRect(); return { x: (e.clientX - r.left) * project.image.width / r.width, y: (e.clientY - r.top) * project.image.height / r.height } }
   const moduleNumber = () => `М${String(project.objects.filter(o => o.type === 'module').length + 1).padStart(2, '0')}`
@@ -165,20 +189,33 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       commit(old => ({ ...old, objects: [...old.objects, o] })); setSelected(o.id); setChainLast(end); return
     }
     dragRef.current = { mode: 'create', start: p, before: project }
+    setDraftLine({ start: p, end: p, callout: tool === 'callout' })
     ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
   }
 
   const onStageMove = (e: ReactPointerEvent<SVGSVGElement>) => {
     const d = dragRef.current
     if (!d) return
-    const p = point(e)
-    if (d.mode === 'create') return
+    let p = point(e)
+    if (d.mode === 'create') {
+      if (tool === 'free-dimension' && e.shiftKey) p = snapAngle(d.start, p)
+      if (tool === 'h-dimension') p.y = d.start.y
+      if (tool === 'v-dimension') p.x = d.start.x
+      setDraftLine({ start: d.start, end: p, callout: tool === 'callout' })
+      return
+    }
+    if (d.mode === 'handle' && d.original?.type === 'dimension' && d.original.orientation === 'free' && e.shiftKey) {
+      const anchor = d.end === 'start' ? { x: d.original.x2, y: d.original.y2 } : { x: d.original.x, y: d.original.y }
+      p = snapAngle(anchor, p)
+    }
     const dx = p.x - d.start.x, dy = p.y - d.start.y
     setProject(current => ({ ...current, objects: current.objects.map(o => {
       if (o.id !== d.id || !d.original) return o
       const orig = d.original
       if (d.mode === 'handle') {
-        if (orig.type === 'dimension') return d.end === 'start' ? { ...orig, x: p.x, y: orig.orientation === 'horizontal' ? orig.y : p.y } : { ...orig, x2: orig.orientation === 'horizontal' ? p.x : orig.x2, y2: orig.orientation === 'vertical' ? p.y : orig.y2 }
+        if (orig.type === 'dimension') return d.end === 'start'
+          ? { ...orig, x: orig.orientation === 'vertical' ? orig.x : p.x, y: orig.orientation === 'horizontal' ? orig.y : p.y }
+          : { ...orig, x2: orig.orientation === 'vertical' ? orig.x2 : p.x, y2: orig.orientation === 'horizontal' ? orig.y2 : p.y }
         if (orig.type === 'callout') return { ...orig, targetX: p.x, targetY: p.y }
       }
       const moved = { ...orig, x: orig.x + dx, y: orig.y + dy } as SketchObject
@@ -191,19 +228,23 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const onStageUp = (e: ReactPointerEvent<SVGSVGElement>) => {
     const d = dragRef.current
     if (!d) return
-    const p = point(e)
+    let p = point(e)
     if (d.mode === 'create') {
       const horizontal = tool === 'h-dimension'
+      const vertical = tool === 'v-dimension'
+      const isFree = tool === 'free-dimension'
       const isCallout = tool === 'callout'
+      if (isFree && e.shiftKey) p = snapAngle(d.start, p)
       const distance = Math.hypot(p.x - d.start.x, p.y - d.start.y)
       if (distance > 8) {
         let o: SketchObject
         if (isCallout) o = { id: uid(), type: 'callout', targetX: d.start.x, targetY: d.start.y, x: p.x, y: p.y, text: 'Текст выноски', color: COLORS.ink, fontSize: 22 }
-        else o = { id: uid(), type: 'dimension', orientation: horizontal ? 'horizontal' : 'vertical', x: d.start.x, y: d.start.y, x2: horizontal ? p.x : d.start.x, y2: horizontal ? d.start.y : p.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
+        else o = { id: uid(), type: 'dimension', orientation: isFree ? 'free' : horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', x: d.start.x, y: d.start.y, x2: vertical ? d.start.x : p.x, y2: horizontal ? d.start.y : p.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
         past.current.push(d.before); future.current = []; setProject(old => ({ ...old, objects: [...old.objects, o] })); setSelected(o.id); setSaved(false); setTool('select')
       }
     } else { past.current.push(d.before); future.current = []; setSaved(false) }
     dragRef.current = null
+    setDraftLine(null)
   }
 
   const objectDown = (e: ReactPointerEvent<SVGGElement>, o: SketchObject) => {
@@ -236,6 +277,10 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
             <defs><marker id="dimArrow" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 8 1 L 1 4.5 L 8 8" fill="none" stroke={COLORS.ink} strokeWidth="1.5"/></marker></defs>
             {showImage && <image href={project.image.dataUrl} x="0" y="0" width={project.image.width} height={project.image.height} preserveAspectRatio="none" pointerEvents="none"/>}
             {showAnnotations && project.objects.map(o => <SketchObjectView key={o.id} object={o} selected={o.id === selected} onPointerDown={objectDown} onHandleDown={handleDown}/>)}
+            {draftLine && <g pointerEvents="none" opacity=".9">
+              <line x1={draftLine.start.x} y1={draftLine.start.y} x2={draftLine.end.x} y2={draftLine.end.y} stroke={COLORS.accent} strokeWidth="3" strokeDasharray="10 7"/>
+              <circle cx={draftLine.start.x} cy={draftLine.start.y} r="6" fill={COLORS.accent}/><circle cx={draftLine.end.x} cy={draftLine.end.y} r="6" fill={COLORS.accent}/>
+            </g>}
             {tool === 'chain' && chainLast && <g pointerEvents="none"><circle cx={chainLast.x} cy={chainLast.y} r="8" fill={COLORS.accent}/><circle cx={chainLast.x} cy={chainLast.y} r="16" fill="none" stroke={COLORS.accent} opacity=".35"/></g>}
           </svg>
         </div>
@@ -243,7 +288,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       </section>
       {sidebarOpen && <Inspector project={project} object={chosen} showImage={showImage} showAnnotations={showAnnotations} onShowImage={setShowImage} onShowAnnotations={setShowAnnotations} onProject={patch => commit(p => ({ ...p, ...patch }))} onObject={(patch) => chosen && changeObject(chosen.id, patch)} onDelete={deleteSelected} onDuplicate={duplicate}/>} 
     </div>
-    <footer className="status-bar"><span><span className="status-dot"/> {project.image.name} · {project.image.width} × {project.image.height}px</span><span className="status-tip">Колесо — прокрутка · Ctrl + колесо — масштаб · Пробел — перемещение</span><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.1, z - .1))}><ZoomOut/></button><button className="zoom-value" onClick={fit}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(3, z + .1))}><ZoomIn/></button><button title="По размеру экрана" onClick={fit}><Maximize2/></button></div></footer>
+    <footer className="status-bar"><span><span className="status-dot"/> {project.image.name} · {project.image.width} × {project.image.height}px</span><span className="status-tip">Стрелки — точный сдвиг · Shift — привязка угла · Пробел — перемещение</span><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.1, z - .1))}><ZoomOut/></button><button className="zoom-value" onClick={fit}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(3, z + .1))}><ZoomIn/></button><button title="По размеру экрана" onClick={fit}><Maximize2/></button></div></footer>
   </div>
 }
 
@@ -260,11 +305,13 @@ function Inspector({ project, object, showImage, showAnnotations, onShowImage, o
 function ObjectFields({ object: o, onObject }: { object: SketchObject; onObject: (p: Partial<SketchObject>) => void }) {
   const title = o.type === 'dimension' ? 'Размерная линия' : o.type === 'module' ? 'Модуль' : o.type === 'callout' ? 'Выноска' : o.type === 'equipment' ? 'Техника' : o.type === 'link' ? 'Ссылка' : 'Комментарий'
   return <div className="fields"><div className="fields-heading"><span>{title}</span><small>#{o.id.slice(0, 5)}</small></div>
-    {o.type === 'dimension' && <><label>Значение, мм<input autoFocus value={o.value} onChange={e => onObject({ value: e.target.value } as Partial<SketchObject>)}/></label><label>Ориентация<select value={o.orientation} onChange={e => onObject({ orientation: e.target.value } as Partial<SketchObject>)}><option value="horizontal">Горизонтальная</option><option value="vertical">Вертикальная</option></select></label><label>Толщина линии<div className="range-row"><input type="range" min="1" max="6" step=".5" value={o.lineWidth} onChange={e => onObject({ lineWidth: +e.target.value } as Partial<SketchObject>)}/><span>{o.lineWidth}px</span></div></label></>}
+    {o.type === 'dimension' && <><label>Значение, мм<input autoFocus value={o.value} onChange={e => onObject({ value: e.target.value } as Partial<SketchObject>)}/></label><label>Ориентация<select value={o.orientation} onChange={e => { const orientation = e.target.value; onObject({ orientation, ...(orientation === 'horizontal' ? { y2: o.y } : orientation === 'vertical' ? { x2: o.x } : {}) } as Partial<SketchObject>) }}><option value="free">Свободная</option><option value="horizontal">Горизонтальная</option><option value="vertical">Вертикальная</option></select></label><label>Положение текста<select value={o.textOrientation ?? 'parallel'} onChange={e => onObject({ textOrientation: e.target.value } as Partial<SketchObject>)}><option value="parallel">Параллельно линии</option><option value="horizontal">Всегда горизонтально</option></select></label><label>Толщина линии<div className="range-row"><input type="range" min="1" max="6" step=".5" value={o.lineWidth} onChange={e => onObject({ lineWidth: +e.target.value } as Partial<SketchObject>)}/><span>{o.lineWidth}px</span></div></label></>}
     {o.type === 'module' && <><label>Номер модуля<input autoFocus value={o.number} onChange={e => onObject({ number: e.target.value } as Partial<SketchObject>)}/></label><label>Описание<textarea rows={4} placeholder={'600\nНиз'} value={o.description} onChange={e => onObject({ description: e.target.value } as Partial<SketchObject>)}/></label></>}
     {(o.type === 'comment' || o.type === 'callout') && <label>Текст<textarea autoFocus rows={5} value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label>}
     {o.type === 'equipment' && <><label>Тип техники<select value={o.equipmentType} onChange={e => onObject({ equipmentType: e.target.value, text: e.target.value } as Partial<SketchObject>)}>{equipmentTypes.map(t => <option key={t}>{t}</option>)}</select></label><label>Подпись<input autoFocus value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label><label>Ссылка на модель<input type="url" placeholder="https://…" value={o.url || ''} onChange={e => onObject({ url: e.target.value } as Partial<SketchObject>)}/></label></>}
     {o.type === 'link' && <><label>Название<input autoFocus value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label><label>URL<input type="url" placeholder="https://…" value={o.url || ''} onChange={e => onObject({ url: e.target.value } as Partial<SketchObject>)}/></label>{o.url && <a className="test-link" href={o.url} target="_blank" rel="noreferrer"><ExternalLink/>Открыть ссылку</a>}</>}
+    <div className="section-label">Положение</div><div className="field-row"><label>X<input type="number" value={Math.round(o.x)} onChange={e => onObject({ x: +e.target.value } as Partial<SketchObject>)}/></label><label>Y<input type="number" value={Math.round(o.y)} onChange={e => onObject({ y: +e.target.value } as Partial<SketchObject>)}/></label></div>
+    {o.type === 'dimension' && <div className="field-row"><label>Конец X<input type="number" value={Math.round(o.x2)} onChange={e => onObject({ x2: +e.target.value } as Partial<SketchObject>)}/></label><label>Конец Y<input type="number" value={Math.round(o.y2)} onChange={e => onObject({ y2: +e.target.value } as Partial<SketchObject>)}/></label></div>}
     <div className="field-row"><label>Цвет<input className="color-input" type="color" value={o.color} onChange={e => onObject({ color: e.target.value } as Partial<SketchObject>)}/></label><label>Размер текста<input type="number" min="12" max="64" value={o.fontSize} onChange={e => onObject({ fontSize: +e.target.value } as Partial<SketchObject>)}/></label></div>
     <div className="helper-card"><b>Быстрое редактирование</b><span>Перетащите объект, чтобы переместить. Синие маркеры меняют край линии.</span></div>
   </div>
