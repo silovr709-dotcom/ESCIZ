@@ -6,14 +6,14 @@ type Props = {
   object: SketchObject
   selected: boolean
   onPointerDown: (e: ReactPointerEvent<SVGGElement>, object: SketchObject) => void
-  onHandleDown: (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end') => void
+  onHandleDown: (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end' | 'offset') => void
 }
 
 export default function SketchObjectView({ object: o, selected, onPointerDown, onHandleDown }: Props) {
   const common = { stroke: o.color, fill: o.color }
   if (o.type === 'dimension') {
     const x1 = o.x, y1 = o.y, x2 = o.x2, y2 = o.y2
-    const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2
+    const baseMidX = (x1 + x2) / 2, baseMidY = (y1 + y2) / 2
     const lineAngle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI
     let readableAngle = lineAngle
     if (readableAngle > 90) readableAngle -= 180
@@ -23,19 +23,31 @@ export default function SketchObjectView({ object: o, selected, onPointerDown, o
     const approxWidth = Math.max(68, label.length * o.fontSize * .62)
     const tick = 9
     const length = Math.max(1, Math.hypot(x2 - x1, y2 - y1))
-    const normalX = -(y2 - y1) / length * tick
-    const normalY = (x2 - x1) / length * tick
+    const unitNormalX = -(y2 - y1) / length
+    const unitNormalY = (x2 - x1) / length
+    const offset = o.offset ?? 0
+    const lineX1 = x1 + unitNormalX * offset, lineY1 = y1 + unitNormalY * offset
+    const lineX2 = x2 + unitNormalX * offset, lineY2 = y2 + unitNormalY * offset
+    const midX = baseMidX + unitNormalX * offset, midY = baseMidY + unitNormalY * offset
+    const normalX = unitNormalX * tick, normalY = unitNormalY * tick
+    const extension = offset === 0 ? 0 : Math.sign(offset) * 7
     return <g className={`sketch-object ${selected ? 'selected' : ''}`} onPointerDown={e => onPointerDown(e, o)}>
-      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={o.color} strokeWidth={o.lineWidth} markerStart="url(#dimArrow)" markerEnd="url(#dimArrow)" />
-      <line x1={x1 - normalX} y1={y1 - normalY} x2={x1 + normalX} y2={y1 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
-      <line x1={x2 - normalX} y1={y2 - normalY} x2={x2 + normalX} y2={y2 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
+      {offset !== 0 && <>
+        <line x1={x1} y1={y1} x2={lineX1 + unitNormalX * extension} y2={lineY1 + unitNormalY * extension} stroke={o.color} strokeWidth={Math.max(1, o.lineWidth * .7)} opacity=".78"/>
+        <line x1={x2} y1={y2} x2={lineX2 + unitNormalX * extension} y2={lineY2 + unitNormalY * extension} stroke={o.color} strokeWidth={Math.max(1, o.lineWidth * .7)} opacity=".78"/>
+      </>}
+      <line x1={lineX1} y1={lineY1} x2={lineX2} y2={lineY2} stroke={o.color} strokeWidth={o.lineWidth} markerStart="url(#dimArrow)" markerEnd="url(#dimArrow)" />
+      <line x1={lineX1 - normalX} y1={lineY1 - normalY} x2={lineX1 + normalX} y2={lineY1 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
+      <line x1={lineX2 - normalX} y1={lineY2 - normalY} x2={lineX2 + normalX} y2={lineY2 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
       <g transform={`translate(${midX} ${midY}) rotate(${textAngle})`}>
         <rect x={-approxWidth / 2} y={-o.fontSize * .72} width={approxWidth} height={o.fontSize * 1.25} rx="3" fill="white" opacity=".92"/>
         <text textAnchor="middle" dominantBaseline="middle" fontSize={o.fontSize} fontWeight="700" fill={o.color}>{label}</text>
       </g>
       {selected && <>
+        {offset !== 0 && <line x1={baseMidX} y1={baseMidY} x2={midX} y2={midY} stroke="#2563eb" strokeWidth="1" strokeDasharray="4 4" opacity=".7"/>}
         <circle className="object-handle" cx={x1} cy={y1} r="7" onPointerDown={e => onHandleDown(e, 'start')}/>
         <circle className="object-handle" cx={x2} cy={y2} r="7" onPointerDown={e => onHandleDown(e, 'end')}/>
+        <circle className="object-handle offset-handle" cx={midX} cy={midY} r="8" onPointerDown={e => onHandleDown(e, 'offset')}/>
       </>}
     </g>
   }

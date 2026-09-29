@@ -25,7 +25,8 @@ const toolItems: { id: Tool; label: string; icon: typeof MousePointer2; key?: st
   { id: 'link', label: 'Ссылка', icon: Link2, key: 'K' },
 ]
 
-type Drag = { mode: 'create' | 'move' | 'handle'; start: { x: number; y: number }; id?: string; end?: 'start' | 'end'; before: SketchProject; original?: SketchObject }
+type Drag = { mode: 'create' | 'move' | 'handle'; start: { x: number; y: number }; id?: string; end?: 'start' | 'end' | 'offset'; before: SketchProject; original?: SketchObject }
+type QuickEdit = { id: string; value: string; left: number; top: number; repeatTool: Tool }
 
 function readImage(file: File): Promise<{ dataUrl: string; width: number; height: number; name: string }> {
   return new Promise((resolve, reject) => {
@@ -109,6 +110,8 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chainLast, setChainLast] = useState<{ x: number; y: number } | null>(null)
   const [draftLine, setDraftLine] = useState<{ start: { x: number; y: number }; end: { x: number; y: number }; callout: boolean } | null>(null)
+  const [snapIndicator, setSnapIndicator] = useState<{ x: number; y: number } | null>(null)
+  const [quickEdit, setQuickEdit] = useState<QuickEdit | null>(null)
   const [spaceDown, setSpaceDown] = useState(false)
   const svgRef = useRef<SVGSVGElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -164,6 +167,26 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   }, [deleteSelected, duplicate, nudgeSelected, redo, save, selected, undo])
 
   const point = (e: ReactPointerEvent) => { const r = svgRef.current!.getBoundingClientRect(); return { x: (e.clientX - r.left) * project.image.width / r.width, y: (e.clientY - r.top) * project.image.height / r.height } }
+  const nearestSnap = (raw: { x: number; y: number }, excludeId?: string) => {
+    const points: { x: number; y: number }[] = []
+    for (const o of project.objects) {
+      if (o.id === excludeId) continue
+      points.push({ x: o.x, y: o.y })
+      if (o.type === 'dimension') points.push({ x: o.x2, y: o.y2 })
+      if (o.type === 'callout') points.push({ x: o.targetX, y: o.targetY })
+    }
+    const threshold = 14 / zoom
+    let best: { x: number; y: number } | null = null, distance = threshold
+    for (const p of points) { const d = Math.hypot(p.x - raw.x, p.y - raw.y); if (d < distance) { best = p; distance = d } }
+    if (best) return best
+    let snapX = raw.x, snapY = raw.y, dx = threshold, dy = threshold
+    for (const p of points) {
+      const nextX = Math.abs(p.x - raw.x), nextY = Math.abs(p.y - raw.y)
+      if (nextX < dx) { dx = nextX; snapX = p.x }
+      if (nextY < dy) { dy = nextY; snapY = p.y }
+    }
+    return dx < threshold || dy < threshold ? { x: snapX, y: snapY } : null
+  }
   const moduleNumber = () => `М${String(project.objects.filter(o => o.type === 'module').length + 1).padStart(2, '0')}`
   const addAt = (type: Tool, p: { x: number; y: number }) => {
     const base = { id: uid(), x: p.x, y: p.y, color: COLORS.ink, fontSize: 22 }
@@ -176,17 +199,25 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   }
 
   const onStageDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (quickEdit) {
+      setProject(current => ({ ...current, objects: current.objects.map(o => o.id === quickEdit.id && o.type === 'dimension' ? { ...o, value: quickEdit.value } : o) }))
+      setQuickEdit(null); setSaved(false)
+    }
     if (spaceDown || e.button === 1) return
     if (e.target !== e.currentTarget && (e.target as Element).tagName !== 'image') return
-    const p = point(e)
+    let p = point(e)
+    if (!e.altKey && ['free-dimension', 'h-dimension', 'v-dimension', 'chain', 'callout'].includes(tool)) {
+      const snapped = nearestSnap(p)
+      if (snapped) { p = snapped; setSnapIndicator(snapped) }
+    }
     if (tool === 'select') { setSelected(null); return }
     if (['module', 'comment', 'equipment', 'link'].includes(tool)) { addAt(tool, p); return }
     if (tool === 'chain') {
       if (!chainLast) { setChainLast(p); return }
       const horizontal = Math.abs(p.x - chainLast.x) >= Math.abs(p.y - chainLast.y)
       const end = horizontal ? { x: p.x, y: chainLast.y } : { x: chainLast.x, y: p.y }
-      const o: SketchObject = { id: uid(), type: 'dimension', orientation: horizontal ? 'horizontal' : 'vertical', x: chainLast.x, y: chainLast.y, x2: end.x, y2: end.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
-      commit(old => ({ ...old, objects: [...old.objects, o] })); setSelected(o.id); setChainLast(end); return
+      const o: SketchObject = { id: uid(), type: 'dimension', orientation: horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', offset: 0, x: chainLast.x, y: chainLast.y, x2: end.x, y2: end.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
+      commit(old => ({ ...old, objects: [...old.objects, o] })); setSelected(o.id); setChainLast(end); setQuickEdit({ id: o.id, value: o.value, left: e.clientX, top: e.clientY, repeatTool: 'chain' }); return
     }
     dragRef.current = { mode: 'create', start: p, before: project }
     setDraftLine({ start: p, end: p, callout: tool === 'callout' })
@@ -198,13 +229,19 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     if (!d) return
     let p = point(e)
     if (d.mode === 'create') {
+      const snapped = !e.altKey ? nearestSnap(p) : null
+      if (snapped) { p = snapped; setSnapIndicator(snapped) } else setSnapIndicator(null)
       if (tool === 'free-dimension' && e.shiftKey) p = snapAngle(d.start, p)
       if (tool === 'h-dimension') p.y = d.start.y
       if (tool === 'v-dimension') p.x = d.start.x
       setDraftLine({ start: d.start, end: p, callout: tool === 'callout' })
       return
     }
-    if (d.mode === 'handle' && d.original?.type === 'dimension' && d.original.orientation === 'free' && e.shiftKey) {
+    if (d.mode === 'handle' && d.end !== 'offset') {
+      const snapped = !e.altKey ? nearestSnap(p, d.id) : null
+      if (snapped) { p = snapped; setSnapIndicator(snapped) } else setSnapIndicator(null)
+    }
+    if (d.mode === 'handle' && d.end !== 'offset' && d.original?.type === 'dimension' && d.original.orientation === 'free' && e.shiftKey) {
       const anchor = d.end === 'start' ? { x: d.original.x2, y: d.original.y2 } : { x: d.original.x, y: d.original.y }
       p = snapAngle(anchor, p)
     }
@@ -213,9 +250,17 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       if (o.id !== d.id || !d.original) return o
       const orig = d.original
       if (d.mode === 'handle') {
-        if (orig.type === 'dimension') return d.end === 'start'
-          ? { ...orig, x: orig.orientation === 'vertical' ? orig.x : p.x, y: orig.orientation === 'horizontal' ? orig.y : p.y }
-          : { ...orig, x2: orig.orientation === 'vertical' ? orig.x2 : p.x, y2: orig.orientation === 'horizontal' ? orig.y2 : p.y }
+        if (orig.type === 'dimension') {
+          if (d.end === 'offset') {
+            const length = Math.max(1, Math.hypot(orig.x2 - orig.x, orig.y2 - orig.y))
+            const nx = -(orig.y2 - orig.y) / length, ny = (orig.x2 - orig.x) / length
+            const midX = (orig.x + orig.x2) / 2, midY = (orig.y + orig.y2) / 2
+            return { ...orig, offset: (p.x - midX) * nx + (p.y - midY) * ny }
+          }
+          return d.end === 'start'
+            ? { ...orig, x: orig.orientation === 'vertical' ? orig.x : p.x, y: orig.orientation === 'horizontal' ? orig.y : p.y }
+            : { ...orig, x2: orig.orientation === 'vertical' ? orig.x2 : p.x, y2: orig.orientation === 'horizontal' ? orig.y2 : p.y }
+        }
         if (orig.type === 'callout') return { ...orig, targetX: p.x, targetY: p.y }
       }
       const moved = { ...orig, x: orig.x + dx, y: orig.y + dy } as SketchObject
@@ -234,17 +279,22 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       const vertical = tool === 'v-dimension'
       const isFree = tool === 'free-dimension'
       const isCallout = tool === 'callout'
+      const snapped = !e.altKey ? nearestSnap(p) : null
+      if (snapped) p = snapped
       if (isFree && e.shiftKey) p = snapAngle(d.start, p)
       const distance = Math.hypot(p.x - d.start.x, p.y - d.start.y)
       if (distance > 8) {
         let o: SketchObject
         if (isCallout) o = { id: uid(), type: 'callout', targetX: d.start.x, targetY: d.start.y, x: p.x, y: p.y, text: 'Текст выноски', color: COLORS.ink, fontSize: 22 }
-        else o = { id: uid(), type: 'dimension', orientation: isFree ? 'free' : horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', x: d.start.x, y: d.start.y, x2: vertical ? d.start.x : p.x, y2: horizontal ? d.start.y : p.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
-        past.current.push(d.before); future.current = []; setProject(old => ({ ...old, objects: [...old.objects, o] })); setSelected(o.id); setSaved(false); setTool('select')
+        else o = { id: uid(), type: 'dimension', orientation: isFree ? 'free' : horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', offset: -38, x: d.start.x, y: d.start.y, x2: vertical ? d.start.x : p.x, y2: horizontal ? d.start.y : p.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
+        past.current.push(d.before); future.current = []; setProject(old => ({ ...old, objects: [...old.objects, o] })); setSelected(o.id); setSaved(false)
+        if (o.type === 'dimension') setQuickEdit({ id: o.id, value: o.value, left: e.clientX, top: e.clientY, repeatTool: tool })
+        setTool('select')
       }
     } else { past.current.push(d.before); future.current = []; setSaved(false) }
     dragRef.current = null
     setDraftLine(null)
+    setSnapIndicator(null)
   }
 
   const objectDown = (e: ReactPointerEvent<SVGGElement>, o: SketchObject) => {
@@ -252,7 +302,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     if (tool !== 'select') return
     const p = point(e); dragRef.current = { mode: 'move', start: p, id: o.id, before: project, original: o }; svgRef.current?.setPointerCapture(e.pointerId)
   }
-  const handleDown = (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end') => {
+  const handleDown = (e: ReactPointerEvent<SVGCircleElement>, end: 'start' | 'end' | 'offset') => {
     e.stopPropagation(); if (!chosen) return
     dragRef.current = { mode: 'handle', start: point(e), id: chosen.id, before: project, original: chosen, end }; svgRef.current?.setPointerCapture(e.pointerId)
   }
@@ -262,6 +312,13 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
 
   const setActiveTool = (id: Tool) => { setTool(id); if (id !== 'chain') setChainLast(null) }
   const titleUpdate = (title: string) => { setProject(p => ({ ...p, title })); setSaved(false) }
+  const finishQuickEdit = (repeat = false) => {
+    if (!quickEdit) return
+    setProject(p => ({ ...p, objects: p.objects.map(o => o.id === quickEdit.id && o.type === 'dimension' ? { ...o, value: quickEdit.value } : o) }))
+    setSaved(false)
+    if (repeat && quickEdit.repeatTool !== 'chain') setTool(quickEdit.repeatTool)
+    setQuickEdit(null)
+  }
 
   return <div className="editor-shell">
     <header className="app-header">
@@ -282,10 +339,14 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
               <circle cx={draftLine.start.x} cy={draftLine.start.y} r="6" fill={COLORS.accent}/><circle cx={draftLine.end.x} cy={draftLine.end.y} r="6" fill={COLORS.accent}/>
             </g>}
             {tool === 'chain' && chainLast && <g pointerEvents="none"><circle cx={chainLast.x} cy={chainLast.y} r="8" fill={COLORS.accent}/><circle cx={chainLast.x} cy={chainLast.y} r="16" fill="none" stroke={COLORS.accent} opacity=".35"/></g>}
+            {snapIndicator && <g pointerEvents="none" className="snap-marker"><circle cx={snapIndicator.x} cy={snapIndicator.y} r="11" fill="none" stroke={COLORS.blue} strokeWidth="2"/><path d={`M ${snapIndicator.x - 15} ${snapIndicator.y} H ${snapIndicator.x + 15} M ${snapIndicator.x} ${snapIndicator.y - 15} V ${snapIndicator.y + 15}`} stroke={COLORS.blue} strokeWidth="1"/></g>}
           </svg>
         </div>
         {tool === 'chain' && <div className="chain-hint">Укажите следующую точку · Esc — закончить</div>}
       </section>
+      {quickEdit && <div className="quick-dimension" style={{ left: Math.min(quickEdit.left + 14, window.innerWidth - 210), top: Math.min(quickEdit.top + 14, window.innerHeight - 105) }}>
+        <span>Размер</span><div><input autoFocus inputMode="decimal" value={quickEdit.value} onChange={e => setQuickEdit({ ...quickEdit, value: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); finishQuickEdit(false) } if (e.key === 'Tab') { e.preventDefault(); finishQuickEdit(true) } if (e.key === 'Escape') { e.preventDefault(); setQuickEdit(null) } }}/><b>мм</b></div><small>Enter — готово · Tab — следующий</small>
+      </div>}
       {sidebarOpen && <Inspector project={project} object={chosen} showImage={showImage} showAnnotations={showAnnotations} onShowImage={setShowImage} onShowAnnotations={setShowAnnotations} onProject={patch => commit(p => ({ ...p, ...patch }))} onObject={(patch) => chosen && changeObject(chosen.id, patch)} onDelete={deleteSelected} onDuplicate={duplicate}/>} 
     </div>
     <footer className="status-bar"><span><span className="status-dot"/> {project.image.name} · {project.image.width} × {project.image.height}px</span><span className="status-tip">Стрелки — точный сдвиг · Shift — привязка угла · Пробел — перемещение</span><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.1, z - .1))}><ZoomOut/></button><button className="zoom-value" onClick={fit}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(3, z + .1))}><ZoomIn/></button><button title="По размеру экрана" onClick={fit}><Maximize2/></button></div></footer>
@@ -305,7 +366,7 @@ function Inspector({ project, object, showImage, showAnnotations, onShowImage, o
 function ObjectFields({ object: o, onObject }: { object: SketchObject; onObject: (p: Partial<SketchObject>) => void }) {
   const title = o.type === 'dimension' ? 'Размерная линия' : o.type === 'module' ? 'Модуль' : o.type === 'callout' ? 'Выноска' : o.type === 'equipment' ? 'Техника' : o.type === 'link' ? 'Ссылка' : 'Комментарий'
   return <div className="fields"><div className="fields-heading"><span>{title}</span><small>#{o.id.slice(0, 5)}</small></div>
-    {o.type === 'dimension' && <><label>Значение, мм<input autoFocus value={o.value} onChange={e => onObject({ value: e.target.value } as Partial<SketchObject>)}/></label><label>Ориентация<select value={o.orientation} onChange={e => { const orientation = e.target.value; onObject({ orientation, ...(orientation === 'horizontal' ? { y2: o.y } : orientation === 'vertical' ? { x2: o.x } : {}) } as Partial<SketchObject>) }}><option value="free">Свободная</option><option value="horizontal">Горизонтальная</option><option value="vertical">Вертикальная</option></select></label><label>Положение текста<select value={o.textOrientation ?? 'parallel'} onChange={e => onObject({ textOrientation: e.target.value } as Partial<SketchObject>)}><option value="parallel">Параллельно линии</option><option value="horizontal">Всегда горизонтально</option></select></label><label>Толщина линии<div className="range-row"><input type="range" min="1" max="6" step=".5" value={o.lineWidth} onChange={e => onObject({ lineWidth: +e.target.value } as Partial<SketchObject>)}/><span>{o.lineWidth}px</span></div></label></>}
+    {o.type === 'dimension' && <><label>Значение, мм<input value={o.value} onChange={e => onObject({ value: e.target.value } as Partial<SketchObject>)}/></label><label>Ориентация<select value={o.orientation} onChange={e => { const orientation = e.target.value; onObject({ orientation, ...(orientation === 'horizontal' ? { y2: o.y } : orientation === 'vertical' ? { x2: o.x } : {}) } as Partial<SketchObject>) }}><option value="free">Свободная</option><option value="horizontal">Горизонтальная</option><option value="vertical">Вертикальная</option></select></label><label>Положение текста<select value={o.textOrientation ?? 'parallel'} onChange={e => onObject({ textOrientation: e.target.value } as Partial<SketchObject>)}><option value="parallel">Параллельно линии</option><option value="horizontal">Всегда горизонтально</option></select></label><label>Отступ размерной линии, px<input type="number" value={Math.round(o.offset ?? 0)} onChange={e => onObject({ offset: +e.target.value } as Partial<SketchObject>)}/></label><label>Толщина линии<div className="range-row"><input type="range" min="1" max="6" step=".5" value={o.lineWidth} onChange={e => onObject({ lineWidth: +e.target.value } as Partial<SketchObject>)}/><span>{o.lineWidth}px</span></div></label></>}
     {o.type === 'module' && <><label>Номер модуля<input autoFocus value={o.number} onChange={e => onObject({ number: e.target.value } as Partial<SketchObject>)}/></label><label>Описание<textarea rows={4} placeholder={'600\nНиз'} value={o.description} onChange={e => onObject({ description: e.target.value } as Partial<SketchObject>)}/></label></>}
     {(o.type === 'comment' || o.type === 'callout') && <label>Текст<textarea autoFocus rows={5} value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label>}
     {o.type === 'equipment' && <><label>Тип техники<select value={o.equipmentType} onChange={e => onObject({ equipmentType: e.target.value, text: e.target.value } as Partial<SketchObject>)}>{equipmentTypes.map(t => <option key={t}>{t}</option>)}</select></label><label>Подпись<input autoFocus value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label><label>Ссылка на модель<input type="url" placeholder="https://…" value={o.url || ''} onChange={e => onObject({ url: e.target.value } as Partial<SketchObject>)}/></label></>}
@@ -313,7 +374,7 @@ function ObjectFields({ object: o, onObject }: { object: SketchObject; onObject:
     <div className="section-label">Положение</div><div className="field-row"><label>X<input type="number" value={Math.round(o.x)} onChange={e => onObject({ x: +e.target.value } as Partial<SketchObject>)}/></label><label>Y<input type="number" value={Math.round(o.y)} onChange={e => onObject({ y: +e.target.value } as Partial<SketchObject>)}/></label></div>
     {o.type === 'dimension' && <div className="field-row"><label>Конец X<input type="number" value={Math.round(o.x2)} onChange={e => onObject({ x2: +e.target.value } as Partial<SketchObject>)}/></label><label>Конец Y<input type="number" value={Math.round(o.y2)} onChange={e => onObject({ y2: +e.target.value } as Partial<SketchObject>)}/></label></div>}
     <div className="field-row"><label>Цвет<input className="color-input" type="color" value={o.color} onChange={e => onObject({ color: e.target.value } as Partial<SketchObject>)}/></label><label>Размер текста<input type="number" min="12" max="64" value={o.fontSize} onChange={e => onObject({ fontSize: +e.target.value } as Partial<SketchObject>)}/></label></div>
-    <div className="helper-card"><b>Быстрое редактирование</b><span>Перетащите объект, чтобы переместить. Синие маркеры меняют край линии.</span></div>
+    <div className="helper-card"><b>Быстрое редактирование</b><span>Крайние маркеры меняют точки измерения, центральный — отступ размерной линии. Alt временно отключает привязку.</span></div>
   </div>
 }
 

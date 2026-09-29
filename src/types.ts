@@ -15,6 +15,7 @@ export type DimensionObject = BaseObject & {
   type: 'dimension'
   orientation: 'horizontal' | 'vertical' | 'free'
   textOrientation?: 'parallel' | 'horizontal'
+  offset?: number
   x2: number
   y2: number
   value: string
