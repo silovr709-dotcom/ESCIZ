@@ -1,0 +1,69 @@
+export type Point = { x: number; y: number }
+export type Tool = 'select' | 'h-dimension' | 'v-dimension' | 'chain' | 'module' | 'callout' | 'comment' | 'equipment' | 'link'
+export type EquipmentType = 'Холодильник' | 'Духовой шкаф' | 'СВЧ' | 'ПММ' | 'Варочная панель' | 'Вытяжка' | 'Стиральная машина' | 'Мойка' | 'Другое'
+
+export type BaseObject = {
+  id: string
+  type: string
+  x: number
+  y: number
+  color: string
+  fontSize: number
+}
+
+export type DimensionObject = BaseObject & {
+  type: 'dimension'
+  orientation: 'horizontal' | 'vertical'
+  x2: number
+  y2: number
+  value: string
+  lineWidth: number
+}
+
+export type ModuleObject = BaseObject & {
+  type: 'module'
+  number: string
+  description: string
+}
+
+export type TextObject = BaseObject & {
+  type: 'comment' | 'link' | 'equipment'
+  text: string
+  url?: string
+  equipmentType?: EquipmentType
+}
+
+export type CalloutObject = BaseObject & {
+  type: 'callout'
+  targetX: number
+  targetY: number
+  text: string
+  url?: string
+}
+
+export type SketchObject = DimensionObject | ModuleObject | TextObject | CalloutObject
+
+export type SketchHeader = {
+  enabled: boolean
+  project: string
+  room: string
+  date: string
+  variant: string
+}
+
+export type SketchProject = {
+  version: 1
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  image: { dataUrl: string; width: number; height: number; name: string }
+  objects: SketchObject[]
+  header: SketchHeader
+  integration: { projectId?: string; clientId?: string }
+}
+
+export type ProjectSummary = Pick<SketchProject, 'id' | 'title' | 'createdAt' | 'updatedAt'> & { thumbnail?: string }
+
+export const uid = () => crypto.randomUUID()
+export const todayRu = () => new Intl.DateTimeFormat('ru-RU').format(new Date())
