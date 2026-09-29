@@ -28,6 +28,12 @@ export type DimensionObject = BaseObject & {
   value: string
   lineWidth: number
   arrowStyle?: 'open' | 'closed' | 'tick'
+  chainId?: string
+  prefix?: string
+  suffix?: string
+  tolerance?: string
+  showUnit?: boolean
+  textPosition?: 'center' | 'above' | 'below'
 }
 
 export type ModuleObject = BaseObject & {

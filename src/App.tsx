@@ -52,6 +52,13 @@ function snapAngle(start: { x: number; y: number }, end: { x: number; y: number 
   return { x: start.x + Math.cos(snapped) * distance, y: start.y + Math.sin(snapped) * distance }
 }
 
+function dimensionOffset(dimension: Extract<SketchObject, { type: 'dimension' }>, point: { x: number; y: number }) {
+  const length = Math.max(1, Math.hypot(dimension.x2 - dimension.x, dimension.y2 - dimension.y))
+  const nx = -(dimension.y2 - dimension.y) / length, ny = (dimension.x2 - dimension.x) / length
+  const midX = (dimension.x + dimension.x2) / 2, midY = (dimension.y + dimension.y2) / 2
+  return (point.x - midX) * nx + (point.y - midY) * ny
+}
+
 function nextModuleNumber(objects: SketchObject[]) {
   const maxNumber = objects.filter(o => o.type === 'module').reduce((max, o) => o.type === 'module' ? Math.max(max, Number(o.number.match(/\d+/)?.[0] ?? 0)) : max, 0)
   return `М${String(maxNumber + 1).padStart(2, '0')}`
@@ -129,6 +136,9 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const [revisions, setRevisions] = useState<ProjectRevision[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chainLast, setChainLast] = useState<{ x: number; y: number } | null>(null)
+  const [chainAxis, setChainAxis] = useState<'horizontal' | 'vertical' | null>(null)
+  const [chainSessionId, setChainSessionId] = useState<string | null>(null)
+  const [pendingDimension, setPendingDimension] = useState<{ id: string; sourceTool: Tool } | null>(null)
   const [draftLine, setDraftLine] = useState<{ start: { x: number; y: number }; end: { x: number; y: number }; callout: boolean } | null>(null)
   const [selectionBox, setSelectionBox] = useState<{ start: { x: number; y: number }; end: { x: number; y: number } } | null>(null)
   const [snapIndicator, setSnapIndicator] = useState<{ x: number; y: number } | null>(null)
@@ -172,9 +182,10 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const duplicate = useCallback(() => {
     if (!selectedIds.length) return
     let all = [...project.objects]
+    const copiedChains = new Map<string, string>()
     const copies = project.objects.filter(o => selectedIds.includes(o.id)).map(source => {
       const copy = { ...source, id: uid(), x: source.x + 24, y: source.y + 24 } as SketchObject
-      if (copy.type === 'dimension') { copy.x2 += 24; copy.y2 += 24 }
+      if (copy.type === 'dimension') { copy.x2 += 24; copy.y2 += 24; if (copy.chainId) { if (!copiedChains.has(copy.chainId)) copiedChains.set(copy.chainId, uid()); copy.chainId = copiedChains.get(copy.chainId) } }
       if (copy.type === 'callout') { copy.targetX += 24; copy.targetY += 24 }
       if (copy.type === 'module') copy.number = nextModuleNumber(all)
       all.push(copy); return copy
@@ -185,7 +196,8 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const pasteClipboard = useCallback(() => {
     if (!sketchClipboard.length) return
     let all = [...project.objects]
-    const copies = sketchClipboard.map(source => { const copy = { ...structuredClone(source), id: uid(), x: source.x + 32, y: source.y + 32 } as SketchObject; if (copy.type === 'dimension') { copy.x2 += 32; copy.y2 += 32 } if (copy.type === 'callout') { copy.targetX += 32; copy.targetY += 32 } if (copy.type === 'module') copy.number = nextModuleNumber(all); all.push(copy); return copy })
+    const pastedChains = new Map<string, string>()
+    const copies = sketchClipboard.map(source => { const copy = { ...structuredClone(source), id: uid(), x: source.x + 32, y: source.y + 32 } as SketchObject; if (copy.type === 'dimension') { copy.x2 += 32; copy.y2 += 32; if (copy.chainId) { if (!pastedChains.has(copy.chainId)) pastedChains.set(copy.chainId, uid()); copy.chainId = pastedChains.get(copy.chainId) } } if (copy.type === 'callout') { copy.targetX += 32; copy.targetY += 32 } if (copy.type === 'module') copy.number = nextModuleNumber(all); all.push(copy); return copy })
     sketchClipboard = copies.map(o => structuredClone(o)); commit(p => ({ ...p, objects: [...p.objects, ...copies] })); setSelectedIds(copies.map(o => o.id)); setSelected(copies.at(-1)?.id ?? null)
   }, [commit, project.objects])
   const nudgeSelected = useCallback((dx: number, dy: number) => {
@@ -215,7 +227,7 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
         const step = e.shiftKey ? 10 : 1
         nudgeSelected(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0)
       }
-      if (e.key === 'Escape') { setTool('select'); selectOnly(null); setChainLast(null) }
+      if (e.key === 'Escape') { setTool('select'); selectOnly(null); setChainLast(null); setChainAxis(null); setChainSessionId(null); setPendingDimension(null) }
       const found = toolItems.find(t => t.key?.toLowerCase() === e.key.toLowerCase())
       if (found && !e.ctrlKey && !e.metaKey) { setTool(found.id); if (found.id !== 'chain') setChainLast(null) }
     }
@@ -262,6 +274,11 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       setQuickEdit(null); setSaved(false)
     }
     if (spaceDown || e.button === 1) return
+    if (pendingDimension) {
+      const dimension = project.objects.find(o => o.id === pendingDimension.id)
+      if (dimension?.type === 'dimension') setQuickEdit({ id: dimension.id, value: dimension.value, left: e.clientX, top: e.clientY, repeatTool: pendingDimension.sourceTool })
+      setPendingDimension(null); setTool('select'); setSnapIndicator(null); return
+    }
     if (e.target !== e.currentTarget && (e.target as Element).tagName !== 'image') return
     let p = point(e)
     if (!e.altKey && ['free-dimension', 'h-dimension', 'v-dimension', 'chain', 'callout'].includes(tool)) {
@@ -271,11 +288,12 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
     if (tool === 'select') { selectOnly(null); dragRef.current = { mode: 'marquee', start: p, before: project }; setSelectionBox({ start: p, end: p }); e.currentTarget.setPointerCapture(e.pointerId); return }
     if (['module', 'comment', 'equipment', 'link'].includes(tool)) { addAt(tool, p); return }
     if (tool === 'chain') {
-      if (!chainLast) { setChainLast(p); return }
-      const horizontal = Math.abs(p.x - chainLast.x) >= Math.abs(p.y - chainLast.y)
+      if (!chainLast) { setChainLast(p); setChainAxis(null); setChainSessionId(uid()); return }
+      const axis = chainAxis ?? (Math.abs(p.x - chainLast.x) >= Math.abs(p.y - chainLast.y) ? 'horizontal' : 'vertical')
+      const horizontal = axis === 'horizontal'
       const end = horizontal ? { x: p.x, y: chainLast.y } : { x: chainLast.x, y: p.y }
-      const o: SketchObject = { id: uid(), type: 'dimension', orientation: horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', offset: 0, x: chainLast.x, y: chainLast.y, x2: end.x, y2: end.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
-      commit(old => ({ ...old, objects: [...old.objects, o] })); selectOnly(o.id); setChainLast(end); setQuickEdit({ id: o.id, value: o.value, left: e.clientX, top: e.clientY, repeatTool: 'chain' }); return
+      const o: SketchObject = { id: uid(), type: 'dimension', orientation: axis, textOrientation: 'parallel', textPosition: 'center', offset: -38, chainId: chainSessionId ?? uid(), x: chainLast.x, y: chainLast.y, x2: end.x, y2: end.y, value: '600', showUnit: true, color: COLORS.ink, fontSize: 22, lineWidth: 2 }
+      commit(old => ({ ...old, objects: [...old.objects, o] })); selectOnly(o.id); setChainAxis(axis); setChainLast(end); setQuickEdit({ id: o.id, value: o.value, left: e.clientX, top: e.clientY, repeatTool: 'chain' }); return
     }
     dragRef.current = { mode: 'create', start: p, before: project }
     setDraftLine({ start: p, end: p, callout: tool === 'callout' })
@@ -284,6 +302,11 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
 
   const onStageMove = (e: ReactPointerEvent<SVGSVGElement>) => {
     const d = dragRef.current
+    if (!d && pendingDimension) {
+      const p = point(e)
+      setProject(current => ({ ...current, objects: current.objects.map(o => o.id === pendingDimension.id && o.type === 'dimension' ? { ...o, offset: dimensionOffset(o, p) } : o) }))
+      return
+    }
     if (!d) return
     let p = point(e)
     if (d.mode === 'marquee') { setSelectionBox({ start: d.start, end: p }); return }
@@ -314,17 +337,13 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
         if (moved.type === 'callout') { moved.targetX += dx; moved.targetY += dy }
         return moved
       }
+      if (d.mode === 'handle' && d.end === 'offset' && d.original?.type === 'dimension' && d.original.chainId && o.type === 'dimension' && o.chainId === d.original.chainId) return { ...o, offset: dimensionOffset(d.original, p) }
       if (o.id !== d.id || !d.original) return o
       const orig = d.original
       if (d.mode === 'handle') {
         if (d.end === 'resize' && orig.type !== 'dimension') return { ...orig, width: Math.max(60, p.x - orig.x), height: Math.max(36, p.y - orig.y) }
         if (orig.type === 'dimension') {
-          if (d.end === 'offset') {
-            const length = Math.max(1, Math.hypot(orig.x2 - orig.x, orig.y2 - orig.y))
-            const nx = -(orig.y2 - orig.y) / length, ny = (orig.x2 - orig.x) / length
-            const midX = (orig.x + orig.x2) / 2, midY = (orig.y + orig.y2) / 2
-            return { ...orig, offset: (p.x - midX) * nx + (p.y - midY) * ny }
-          }
+          if (d.end === 'offset') return { ...orig, offset: dimensionOffset(orig, p) }
           return d.end === 'start'
             ? { ...orig, x: orig.orientation === 'vertical' ? orig.x : p.x, y: orig.orientation === 'horizontal' ? orig.y : p.y }
             : { ...orig, x2: orig.orientation === 'vertical' ? orig.x2 : p.x, y2: orig.orientation === 'horizontal' ? orig.y2 : p.y }
@@ -359,10 +378,9 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
       if (distance > 8) {
         let o: SketchObject
         if (isCallout) o = { id: uid(), type: 'callout', targetX: d.start.x, targetY: d.start.y, x: p.x, y: p.y, text: 'Текст выноски', color: COLORS.ink, fontSize: 22 }
-        else o = { id: uid(), type: 'dimension', orientation: isFree ? 'free' : horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', offset: -38, x: d.start.x, y: d.start.y, x2: vertical ? d.start.x : p.x, y2: horizontal ? d.start.y : p.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
+        else o = { id: uid(), type: 'dimension', orientation: isFree ? 'free' : horizontal ? 'horizontal' : 'vertical', textOrientation: 'parallel', textPosition: 'center', showUnit: true, offset: -38, x: d.start.x, y: d.start.y, x2: vertical ? d.start.x : p.x, y2: horizontal ? d.start.y : p.y, value: '600', color: COLORS.ink, fontSize: 22, lineWidth: 2 }
         past.current.push(d.before); future.current = []; setProject(old => ({ ...old, objects: [...old.objects, o] })); selectOnly(o.id); setSaved(false)
-        if (o.type === 'dimension') setQuickEdit({ id: o.id, value: o.value, left: e.clientX, top: e.clientY, repeatTool: tool })
-        setTool('select')
+        if (o.type === 'dimension') setPendingDimension({ id: o.id, sourceTool: tool }); else setTool('select')
       }
     } else { past.current.push(d.before); future.current = []; setSaved(false) }
     dragRef.current = null
@@ -389,7 +407,8 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
   const fit = () => { const v = viewportRef.current; if (!v) return; setZoom(Math.min((v.clientWidth - 100) / project.image.width, (v.clientHeight - 100) / project.image.height, 1.2)) }
   useEffect(() => { const t = setTimeout(fit, 50); return () => clearTimeout(t) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const setActiveTool = (id: Tool) => { setTool(id); if (id !== 'chain') setChainLast(null) }
+  const setActiveTool = (id: Tool) => { setTool(id); setPendingDimension(null); if (id !== 'chain') { setChainLast(null); setChainAxis(null); setChainSessionId(null) } }
+  const selectChain = (chainId: string) => { const ids = project.objects.filter(o => o.type === 'dimension' && o.chainId === chainId).map(o => o.id); setSelectedIds(ids); setSelected(ids.at(-1) ?? null) }
   const titleUpdate = (title: string) => { setProject(p => ({ ...p, title })); setSaved(false) }
   const openHistory = async () => { setRevisions(await listRevisions(project.id)); setHistoryOpen(true) }
   const createCheckpoint = async () => { const label = prompt('Название контрольной точки:', 'Рабочая версия'); if (!label) return; await saveRevision(project, label); setRevisions(await listRevisions(project.id)) }
@@ -439,33 +458,33 @@ function Editor({ initialProject, onClose }: { initialProject: SketchProject; on
             {snapIndicator && <g pointerEvents="none" className="snap-marker"><circle cx={snapIndicator.x} cy={snapIndicator.y} r="11" fill="none" stroke={COLORS.blue} strokeWidth="2"/><path d={`M ${snapIndicator.x - 15} ${snapIndicator.y} H ${snapIndicator.x + 15} M ${snapIndicator.x} ${snapIndicator.y - 15} V ${snapIndicator.y + 15}`} stroke={COLORS.blue} strokeWidth="1"/></g>}
           </svg>
         </div>
-        {tool === 'chain' && <div className="chain-hint">Укажите следующую точку · Esc — закончить</div>}
+        {pendingDimension ? <div className="chain-hint dimension-step-hint"><b>Шаг 3 из 3</b> Отведите размерную линию и кликните для фиксации</div> : tool === 'chain' && <div className="chain-hint"><b>Цепочка</b> Укажите следующую точку · Enter/клик — значение · Esc — закончить</div>}
       </section>
       {quickEdit && <div className="quick-dimension" style={{ left: Math.min(quickEdit.left + 14, window.innerWidth - 210), top: Math.min(quickEdit.top + 14, window.innerHeight - 105) }}>
         <span>Размер</span><div><input autoFocus inputMode="decimal" value={quickEdit.value} onChange={e => setQuickEdit({ ...quickEdit, value: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); finishQuickEdit(false) } if (e.key === 'Tab') { e.preventDefault(); finishQuickEdit(true) } if (e.key === 'Escape') { e.preventDefault(); setQuickEdit(null) } }}/><b>мм</b></div><small>Enter — готово · Tab — следующий</small>
       </div>}
-      {sidebarOpen && <Inspector project={project} object={chosen} selectedIds={selectedIds} onSelect={selectOnly} onAlign={alignSelection} showImage={showImage} showAnnotations={showAnnotations} onShowImage={setShowImage} onShowAnnotations={setShowAnnotations} onProject={patch => commit(p => ({ ...p, ...patch }))} onObject={(patch) => chosen && changeObject(chosen.id, patch)} onPatchObject={changeObject} onDelete={deleteSelected} onDuplicate={duplicate}/>}
+      {sidebarOpen && <Inspector project={project} object={chosen} selectedIds={selectedIds} onSelect={selectOnly} onSelectChain={selectChain} onAlign={alignSelection} showImage={showImage} showAnnotations={showAnnotations} onShowImage={setShowImage} onShowAnnotations={setShowAnnotations} onProject={patch => commit(p => ({ ...p, ...patch }))} onObject={(patch) => chosen && changeObject(chosen.id, patch)} onPatchObject={changeObject} onDelete={deleteSelected} onDuplicate={duplicate}/>}
     </div>
     {historyOpen && <div className="modal-backdrop" onPointerDown={e => { if (e.target === e.currentTarget) setHistoryOpen(false) }}><section className="history-modal"><div className="modal-title"><div><Clock3/><span><b>История проекта</b><small>Хранится только в этом браузере · максимум 12 версий</small></span></div><button onClick={() => setHistoryOpen(false)}>×</button></div><button className="checkpoint-btn" onClick={createCheckpoint}><Plus/>Создать контрольную точку</button><div className="revision-list">{revisions.length ? revisions.map(revision => <article key={revision.id}><div><b>{revision.label}</b><span>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(revision.createdAt))}</span><small>{revision.project.objects.length} объектов</small></div><button onClick={() => restoreRevision(revision)}>Восстановить</button><button className="revision-delete" title="Удалить версию" onClick={async () => { await deleteRevision(revision.id); setRevisions(await listRevisions(project.id)) }}>×</button></article>) : <div className="no-revisions">Контрольных точек пока нет</div>}</div></section></div>}
     <footer className="status-bar"><span><span className="status-dot"/> {project.image.name} · {project.image.width} × {project.image.height}px</span><span className="status-tip">Стрелки — точный сдвиг · Shift — привязка угла · Пробел — перемещение</span><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.1, z - .1))}><ZoomOut/></button><button className="zoom-value" onClick={fit}>{Math.round(zoom * 100)}%</button><button onClick={() => setZoom(z => Math.min(3, z + .1))}><ZoomIn/></button><button title="По размеру экрана" onClick={fit}><Maximize2/></button></div></footer>
   </div>
 }
 
-function Inspector({ project, object, selectedIds, onSelect, onAlign, showImage, showAnnotations, onShowImage, onShowAnnotations, onProject, onObject, onPatchObject, onDelete, onDuplicate }: { project: SketchProject; object?: SketchObject; selectedIds: string[]; onSelect: (id: string | null) => void; onAlign: (mode: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => void; showImage: boolean; showAnnotations: boolean; onShowImage: (v: boolean) => void; onShowAnnotations: (v: boolean) => void; onProject: (p: Partial<SketchProject>) => void; onObject: (p: Partial<SketchObject>) => void; onPatchObject: (id: string, p: Partial<SketchObject>) => void; onDelete: () => void; onDuplicate: () => void }) {
+function Inspector({ project, object, selectedIds, onSelect, onSelectChain, onAlign, showImage, showAnnotations, onShowImage, onShowAnnotations, onProject, onObject, onPatchObject, onDelete, onDuplicate }: { project: SketchProject; object?: SketchObject; selectedIds: string[]; onSelect: (id: string | null) => void; onSelectChain: (chainId: string) => void; onAlign: (mode: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => void; showImage: boolean; showAnnotations: boolean; onShowImage: (v: boolean) => void; onShowAnnotations: (v: boolean) => void; onProject: (p: Partial<SketchProject>) => void; onObject: (p: Partial<SketchObject>) => void; onPatchObject: (id: string, p: Partial<SketchObject>) => void; onDelete: () => void; onDuplicate: () => void }) {
   const [tab, setTab] = useState<'object' | 'objects' | 'document'>(object ? 'object' : 'document')
   useEffect(() => { if (object) setTab('object') }, [object?.id])
   const reorder = (index: number, delta: number) => { const next = [...project.objects]; const target = index + delta; if (target < 0 || target >= next.length) return; [next[index], next[target]] = [next[target], next[index]]; onProject({ objects: next }) }
   return <aside className="inspector">
     <div className="inspector-tabs"><button className={tab === 'object' ? 'active' : ''} onClick={() => setTab('object')}>Объект</button><button className={tab === 'objects' ? 'active' : ''} onClick={() => setTab('objects')}>Список</button><button className={tab === 'document' ? 'active' : ''} onClick={() => setTab('document')}>Документ</button></div>
-    {tab === 'object' ? selectedIds.length > 1 ? <div className="fields"><div className="fields-heading"><span>Выбрано объектов: {selectedIds.length}</span></div><div className="section-label">Выравнивание</div><div className="align-grid"><button onClick={() => onAlign('left')}>По левому</button><button onClick={() => onAlign('centerX')}>Центр X</button><button onClick={() => onAlign('right')}>По правому</button><button onClick={() => onAlign('top')}>По верху</button><button onClick={() => onAlign('centerY')}>Центр Y</button><button onClick={() => onAlign('bottom')}>По низу</button></div><div className="helper-card"><b>Групповое выделение</b><span>Shift + клик добавляет или убирает объект. Перетаскивание двигает всю выбранную группу.</span></div></div> : object ? <ObjectFields object={object} onObject={onObject}/> : <div className="empty-inspector"><MousePointer2/><strong>Ничего не выбрано</strong><span>Выберите объект на эскизе, чтобы изменить его параметры.</span></div> : tab === 'objects' ? <div className="object-list">{project.objects.map((o, index) => <div key={o.id} className={selectedIds.includes(o.id) ? 'active' : ''}><button className="object-list-main" onClick={() => onSelect(o.id)}><b>{o.type === 'dimension' ? `${o.value} мм` : o.type === 'module' ? o.number : o.type === 'equipment' ? o.text : o.type === 'link' ? `Ссылка: ${o.text}` : o.type === 'callout' ? `Выноска: ${o.text}` : o.text}</b><span>{index + 1} · {o.type}</span></button><button title="Ниже" onClick={() => reorder(index, -1)}>↓</button><button title="Выше" onClick={() => reorder(index, 1)}>↑</button><button title={o.hidden ? 'Показать' : 'Скрыть'} onClick={() => onPatchObject(o.id, { hidden: !o.hidden })}>{o.hidden ? '○' : '◉'}</button><button title={o.locked ? 'Разблокировать' : 'Заблокировать'} onClick={() => onPatchObject(o.id, { locked: !o.locked })}>{o.locked ? '🔒' : '🔓'}</button></div>)}</div> : <DocumentFields project={project} showImage={showImage} showAnnotations={showAnnotations} onShowImage={onShowImage} onShowAnnotations={onShowAnnotations} onProject={onProject}/>}
+    {tab === 'object' ? selectedIds.length > 1 ? <div className="fields"><div className="fields-heading"><span>Выбрано объектов: {selectedIds.length}</span></div><div className="section-label">Выравнивание</div><div className="align-grid"><button onClick={() => onAlign('left')}>По левому</button><button onClick={() => onAlign('centerX')}>Центр X</button><button onClick={() => onAlign('right')}>По правому</button><button onClick={() => onAlign('top')}>По верху</button><button onClick={() => onAlign('centerY')}>Центр Y</button><button onClick={() => onAlign('bottom')}>По низу</button></div><div className="helper-card"><b>Групповое выделение</b><span>Shift + клик добавляет или убирает объект. Перетаскивание двигает всю выбранную группу.</span></div></div> : object ? <ObjectFields object={object} onObject={onObject} onSelectChain={onSelectChain}/> : <div className="empty-inspector"><MousePointer2/><strong>Ничего не выбрано</strong><span>Выберите объект на эскизе, чтобы изменить его параметры.</span></div> : tab === 'objects' ? <div className="object-list">{project.objects.map((o, index) => <div key={o.id} className={selectedIds.includes(o.id) ? 'active' : ''}><button className="object-list-main" onClick={() => onSelect(o.id)}><b>{o.type === 'dimension' ? `${o.value} мм` : o.type === 'module' ? o.number : o.type === 'equipment' ? o.text : o.type === 'link' ? `Ссылка: ${o.text}` : o.type === 'callout' ? `Выноска: ${o.text}` : o.text}</b><span>{index + 1} · {o.type}</span></button><button title="Ниже" onClick={() => reorder(index, -1)}>↓</button><button title="Выше" onClick={() => reorder(index, 1)}>↑</button><button title={o.hidden ? 'Показать' : 'Скрыть'} onClick={() => onPatchObject(o.id, { hidden: !o.hidden })}>{o.hidden ? '○' : '◉'}</button><button title={o.locked ? 'Разблокировать' : 'Заблокировать'} onClick={() => onPatchObject(o.id, { locked: !o.locked })}>{o.locked ? '🔒' : '🔓'}</button></div>)}</div> : <DocumentFields project={project} showImage={showImage} showAnnotations={showAnnotations} onShowImage={onShowImage} onShowAnnotations={onShowAnnotations} onProject={onProject}/>}
     {tab === 'object' && selectedIds.length > 0 && <div className="inspector-bottom"><button onClick={onDuplicate}><Copy/>Дублировать <kbd>⌘D</kbd></button><button className="danger" onClick={onDelete}><Trash2/>Удалить</button></div>}
   </aside>
 }
 
-function ObjectFields({ object: o, onObject }: { object: SketchObject; onObject: (p: Partial<SketchObject>) => void }) {
+function ObjectFields({ object: o, onObject, onSelectChain }: { object: SketchObject; onObject: (p: Partial<SketchObject>) => void; onSelectChain: (chainId: string) => void }) {
   const title = o.type === 'dimension' ? 'Размерная линия' : o.type === 'module' ? 'Модуль' : o.type === 'callout' ? 'Выноска' : o.type === 'equipment' ? 'Техника' : o.type === 'link' ? 'Ссылка' : 'Комментарий'
   return <div className="fields"><div className="fields-heading"><span>{title}</span><small>#{o.id.slice(0, 5)}</small></div><div className="section-label">Быстрый стиль</div><div className="preset-row"><button onClick={() => onObject(o.type === 'dimension' ? { color: '#20242b', fontSize: 22, lineWidth: 2 } as Partial<SketchObject> : { color: '#20242b', fill: '#ffffff', fillOpacity: 1, borderRadius: 6 } as Partial<SketchObject>)}>Чертёж</button><button onClick={() => onObject(o.type === 'dimension' ? { color: '#ff5c35', fontSize: 24, lineWidth: 3 } as Partial<SketchObject> : { color: '#c83c18', fill: '#fff0eb', fillOpacity: .95, borderRadius: 8 } as Partial<SketchObject>)}>Акцент</button><button onClick={() => onObject(o.type === 'dimension' ? { color: '#2563eb', fontSize: 22, lineWidth: 2 } as Partial<SketchObject> : { color: '#35568d', fill: '#f1f5ff', fillOpacity: .92, borderRadius: 4 } as Partial<SketchObject>)}>Монтаж</button></div>
-    {o.type === 'dimension' && <><label>Значение, мм<input value={o.value} onChange={e => onObject({ value: e.target.value } as Partial<SketchObject>)}/></label><label>Ориентация<select value={o.orientation} onChange={e => { const orientation = e.target.value; onObject({ orientation, ...(orientation === 'horizontal' ? { y2: o.y } : orientation === 'vertical' ? { x2: o.x } : {}) } as Partial<SketchObject>) }}><option value="free">Свободная</option><option value="horizontal">Горизонтальная</option><option value="vertical">Вертикальная</option></select></label><label>Положение текста<select value={o.textOrientation ?? 'parallel'} onChange={e => onObject({ textOrientation: e.target.value } as Partial<SketchObject>)}><option value="parallel">Параллельно линии</option><option value="horizontal">Всегда горизонтально</option></select></label><label>Отступ размерной линии, px<input type="number" value={Math.round(o.offset ?? 0)} onChange={e => onObject({ offset: +e.target.value } as Partial<SketchObject>)}/></label><label>Наконечники<select value={o.arrowStyle ?? 'open'} onChange={e => onObject({ arrowStyle: e.target.value } as Partial<SketchObject>)}><option value="open">Открытые стрелки</option><option value="closed">Закрытые стрелки</option><option value="tick">Засечки</option></select></label><label>Толщина линии<div className="range-row"><input type="range" min="1" max="6" step=".5" value={o.lineWidth} onChange={e => onObject({ lineWidth: +e.target.value } as Partial<SketchObject>)}/><span>{o.lineWidth}px</span></div></label></>}
+    {o.type === 'dimension' && <><label>Значение<input value={o.value} onChange={e => onObject({ value: e.target.value } as Partial<SketchObject>)}/></label><div className="field-row"><label>Префикс<input placeholder="≈" value={o.prefix ?? ''} onChange={e => onObject({ prefix: e.target.value } as Partial<SketchObject>)}/></label><label>Допуск ±<input placeholder="2" value={o.tolerance ?? ''} onChange={e => onObject({ tolerance: e.target.value } as Partial<SketchObject>)}/></label></div><label>Примечание после размера<input placeholder="по факту" value={o.suffix ?? ''} onChange={e => onObject({ suffix: e.target.value } as Partial<SketchObject>)}/></label><label className="toggle-row">Показывать единицы «мм»<input type="checkbox" checked={o.showUnit !== false} onChange={e => onObject({ showUnit: e.target.checked } as Partial<SketchObject>)}/><i/></label>{o.chainId && <div className="chain-badge"><span>Сегмент цепочки · общий отступ</span><button onClick={() => onSelectChain(o.chainId!)}>Выделить цепочку</button></div>}<label>Ориентация<select value={o.orientation} onChange={e => { const orientation = e.target.value; onObject({ orientation, ...(orientation === 'horizontal' ? { y2: o.y } : orientation === 'vertical' ? { x2: o.x } : {}) } as Partial<SketchObject>) }}><option value="free">Свободная</option><option value="horizontal">Горизонтальная</option><option value="vertical">Вертикальная</option></select></label><label>Положение текста<select value={o.textOrientation ?? 'parallel'} onChange={e => onObject({ textOrientation: e.target.value } as Partial<SketchObject>)}><option value="parallel">Параллельно линии</option><option value="horizontal">Всегда горизонтально</option></select></label><label>Текст относительно линии<select value={o.textPosition ?? 'center'} onChange={e => onObject({ textPosition: e.target.value } as Partial<SketchObject>)}><option value="center">На линии</option><option value="above">Над линией</option><option value="below">Под линией</option></select></label><label>Отступ размерной линии, px<input type="number" value={Math.round(o.offset ?? 0)} onChange={e => onObject({ offset: +e.target.value } as Partial<SketchObject>)}/></label><label>Наконечники<select value={o.arrowStyle ?? 'open'} onChange={e => onObject({ arrowStyle: e.target.value } as Partial<SketchObject>)}><option value="open">Открытые стрелки</option><option value="closed">Закрытые стрелки</option><option value="tick">Засечки</option></select></label><label>Толщина линии<div className="range-row"><input type="range" min="1" max="6" step=".5" value={o.lineWidth} onChange={e => onObject({ lineWidth: +e.target.value } as Partial<SketchObject>)}/><span>{o.lineWidth}px</span></div></label></>}
     {o.type === 'module' && <><label>Номер модуля<input autoFocus value={o.number} onChange={e => onObject({ number: e.target.value } as Partial<SketchObject>)}/></label><label>Описание<textarea rows={4} placeholder={'600\nНиз'} value={o.description} onChange={e => onObject({ description: e.target.value } as Partial<SketchObject>)}/></label></>}
     {(o.type === 'comment' || o.type === 'callout') && <label>Текст<textarea autoFocus rows={5} value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label>}
     {o.type === 'equipment' && <><label>Тип техники<select value={o.equipmentType} onChange={e => onObject({ equipmentType: e.target.value, text: e.target.value } as Partial<SketchObject>)}>{equipmentTypes.map(t => <option key={t}>{t}</option>)}</select></label><label>Подпись<input autoFocus value={o.text} onChange={e => onObject({ text: e.target.value } as Partial<SketchObject>)}/></label><label>Ссылка на модель<input type="url" placeholder="https://…" value={o.url || ''} onChange={e => onObject({ url: e.target.value } as Partial<SketchObject>)}/></label></>}

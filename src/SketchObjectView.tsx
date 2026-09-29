@@ -39,7 +39,8 @@ export default function SketchObjectView({ object: o, selected, primary = select
     if (readableAngle > 90) readableAngle -= 180
     if (readableAngle < -90) readableAngle += 180
     const textAngle = (o.textOrientation ?? 'parallel') === 'horizontal' ? 0 : readableAngle
-    const label = `${o.value || '—'} мм`
+    const tolerance = o.tolerance ? ` ±${o.tolerance.replace(/^±\s*/, '')}` : ''
+    const label = `${o.prefix ?? ''}${o.value || '—'}${o.showUnit === false ? '' : ' мм'}${tolerance}${o.suffix ? ` ${o.suffix}` : ''}`
     const approxWidth = Math.max(68, label.length * o.fontSize * .62)
     const tick = 9
     const length = Math.max(1, Math.hypot(x2 - x1, y2 - y1))
@@ -49,6 +50,8 @@ export default function SketchObjectView({ object: o, selected, primary = select
     const lineX1 = x1 + unitNormalX * offset, lineY1 = y1 + unitNormalY * offset
     const lineX2 = x2 + unitNormalX * offset, lineY2 = y2 + unitNormalY * offset
     const midX = baseMidX + unitNormalX * offset, midY = baseMidY + unitNormalY * offset
+    const textShift = o.textPosition === 'above' ? -o.fontSize * .9 : o.textPosition === 'below' ? o.fontSize * .9 : 0
+    const textX = midX + unitNormalX * textShift, textY = midY + unitNormalY * textShift
     const normalX = unitNormalX * tick, normalY = unitNormalY * tick
     const extension = offset === 0 ? 0 : Math.sign(offset) * 7
     return <g className={`sketch-object ${selected ? 'selected' : ''}`} onPointerDown={e => onPointerDown(e, o)}>
@@ -59,7 +62,7 @@ export default function SketchObjectView({ object: o, selected, primary = select
       <line x1={lineX1} y1={lineY1} x2={lineX2} y2={lineY2} stroke={o.color} strokeWidth={o.lineWidth} markerStart={o.arrowStyle === 'tick' ? undefined : `url(#${o.arrowStyle === 'closed' ? 'dimArrowClosed' : 'dimArrow'})`} markerEnd={o.arrowStyle === 'tick' ? undefined : `url(#${o.arrowStyle === 'closed' ? 'dimArrowClosed' : 'dimArrow'})`} />
       <line x1={lineX1 - normalX} y1={lineY1 - normalY} x2={lineX1 + normalX} y2={lineY1 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
       <line x1={lineX2 - normalX} y1={lineY2 - normalY} x2={lineX2 + normalX} y2={lineY2 + normalY} stroke={o.color} strokeWidth={o.lineWidth}/>
-      <g transform={`translate(${midX} ${midY}) rotate(${textAngle})`}>
+      <g transform={`translate(${textX} ${textY}) rotate(${textAngle})`}>
         <rect x={-approxWidth / 2} y={-o.fontSize * .72} width={approxWidth} height={o.fontSize * 1.25} rx="3" fill="white" opacity=".92"/>
         <text textAnchor="middle" dominantBaseline="middle" fontSize={o.fontSize} fontWeight="700" fill={o.color}>{label}</text>
       </g>
